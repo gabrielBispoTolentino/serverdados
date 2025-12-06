@@ -475,6 +475,21 @@ app.post('/agendamentos', async (req, res) => {
     if (!usuario_id || !estabelecimento_id || !plano_id || !proximo_pag || !status) {
       return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
     }
+
+    // Verificar conflito de horário
+    const [conflitos] = await pool.execute(`
+      SELECT id FROM inscricoes 
+      WHERE estabelecimento_id = ? 
+      AND proxima_data_cobrança = ? 
+      AND status IN ('ativo', 'free trial')
+    `, [estabelecimento_id, proximo_pag]);
+
+    if (conflitos.length > 0) {
+      return res.status(409).json({ 
+        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.' 
+      });
+    }
+
     const [result] = await pool.execute(
       'INSERT INTO inscricoes (usuario_id, estabelecimento_id, plano_id, proxima_data_cobrança, status) VALUES (?, ?, ?, ?, ?)',
       [usuario_id, estabelecimento_id, plano_id, proximo_pag, status]
@@ -483,8 +498,11 @@ app.post('/agendamentos', async (req, res) => {
   }catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar agendamento' });
-  }})
- app.get('/agendamentos', async (req, res) => {
+  }
+});
+
+// Buscar agendamentos do usuário
+app.get('/agendamentos', async (req, res) => {
   try {
     const { usuario_id } = req.query;
 
@@ -506,7 +524,7 @@ app.post('/agendamentos', async (req, res) => {
       LEFT JOIN usuario u ON u.id = i.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
       WHERE i.usuario_id = ?
-      ORDER BY i.id DESC
+      ORDER BY i.proxima_data_cobrança DESC
     `, [usuario_id]);
 
     res.json(rows);
@@ -514,6 +532,116 @@ app.post('/agendamentos', async (req, res) => {
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: "Erro ao buscar agendamentos" });
+  }
+});
+
+// Buscar horários disponíveis de um estabelecimento
+app.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req, res) => {
+  try {
+    const { estabelecimento_id } = req.params;
+    const { data } = req.query; // formato: YYYY-MM-DD
+
+    if (!data) {
+      return res.status(400).json({ erro: 'Data é obrigatória' });
+    }
+
+    // Buscar todos os horários ocupados nesse dia
+    const [ocupados] = await pool.execute(`
+      SELECT proxima_data_cobrança 
+      FROM inscricoes 
+      WHERE estabelecimento_id = ? 
+      AND DATE(proxima_data_cobrança) = ?
+      AND status IN ('ativo', 'free trial')
+    `, [estabelecimento_id, data]);
+
+    const horariosOcupados = ocupados.map(row => 
+      new Date(row.proxima_data_cobrança).toISOString()
+    );
+
+    res.json({ horariosOcupados });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar horários disponíveis' });
+  }
+});
+
+// Cancelar agendamento
+app.patch('/agendamentos/:id/cancelar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { usuario_id } = req.body;
+
+    // Verificar se o agendamento pertence ao usuário
+    const [agendamento] = await pool.execute(
+      'SELECT * FROM inscricoes WHERE id = ? AND usuario_id = ?',
+      [id, usuario_id]
+    );
+
+    if (agendamento.length === 0) {
+      return res.status(404).json({ erro: 'Agendamento não encontrado' });
+    }
+
+    // Atualizar status para cancelado
+    await pool.execute(
+      'UPDATE inscricoes SET status = ? WHERE id = ?',
+      ['cancelado', id]
+    );
+
+    res.json({ mensagem: 'Agendamento cancelado com sucesso' });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao cancelar agendamento' });
+  }
+});
+
+// Reagendar agendamento
+app.patch('/agendamentos/:id/reagendar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { usuario_id, nova_data } = req.body;
+
+    if (!nova_data) {
+      return res.status(400).json({ erro: 'Nova data é obrigatória' });
+    }
+
+    // Verificar se o agendamento pertence ao usuário
+    const [agendamento] = await pool.execute(
+      'SELECT * FROM inscricoes WHERE id = ? AND usuario_id = ?',
+      [id, usuario_id]
+    );
+
+    if (agendamento.length === 0) {
+      return res.status(404).json({ erro: 'Agendamento não encontrado' });
+    }
+
+    // Verificar conflito no novo horário
+    const [conflitos] = await pool.execute(`
+      SELECT id FROM inscricoes 
+      WHERE estabelecimento_id = ? 
+      AND proxima_data_cobrança = ? 
+      AND status IN ('ativo', 'free trial')
+      AND id != ?
+    `, [agendamento[0].estabelecimento_id, nova_data, id]);
+
+    if (conflitos.length > 0) {
+      return res.status(409).json({ 
+        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.' 
+      });
+    }
+
+    // Atualizar data do agendamento
+    await pool.execute(
+      'UPDATE inscricoes SET proxima_data_cobrança = ? WHERE id = ?',
+      [nova_data, id]
+    );
+
+    res.json({ mensagem: 'Agendamento reagendado com sucesso' });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao reagendar agendamento' });
   }
 });
 
