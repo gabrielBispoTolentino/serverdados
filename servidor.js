@@ -516,7 +516,7 @@ app.get('/agendamentos', async (req, res) => {
         i.usuario_id,
         i.estabelecimento_id,
         i.plano_id,
-        i.proxima_data_cobrança,
+       i.proxima_data_cobrança AS proximo_pag,
         i.status,
         u.nome AS usuario_nome,
         e.nome AS estabelecimento_nome
