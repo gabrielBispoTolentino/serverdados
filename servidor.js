@@ -484,8 +484,14 @@ app.post('/agendamentos', async (req, res) => {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar agendamento' });
   }})
-  app.get('/agendamentos', async (req, res) => {
+ app.get('/agendamentos', async (req, res) => {
   try {
+    const { usuario_id } = req.query;
+
+    if (!usuario_id) {
+      return res.status(400).json({ erro: "usuario_id é obrigatório" });
+    }
+
     const [rows] = await pool.execute(`
       SELECT 
         i.id,
@@ -499,15 +505,18 @@ app.post('/agendamentos', async (req, res) => {
       FROM inscricoes i
       LEFT JOIN usuario u ON u.id = i.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
+      WHERE i.usuario_id = ?
       ORDER BY i.id DESC
-    `);
+    `, [usuario_id]);
 
     res.json(rows);
+
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: "Erro ao buscar agendamentos" });
   }
 });
+
 
 //==========================AVALIACAO=========================
 app.post('/avaliacoes', async (req, res) => {
