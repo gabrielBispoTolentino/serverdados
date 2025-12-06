@@ -534,6 +534,50 @@ app.get('/agendamentos', async (req, res) => {
     res.status(500).json({ erro: "Erro ao buscar agendamentos" });
   }
 });
+app.get('/agendamentos/minha-barbearia', async (req, res) => {
+  try {
+    const { usuario_id } = req.query;
+    if (!usuario_id) {
+      return res.status(400).json({ erro: 'usuario_id é obrigatório' });
+    }
+    const [barbearias] = await pool.execute(
+      'SELECT id, nome FROM establishments WHERE dono_id = ? AND deletedo_em IS NULL',
+      [usuario_id]
+    );
+
+    if (!barbearias || barbearias.length === 0) {
+      return res.json([]); // nenhuma barbearia -> sem agendamentos
+    }
+    const ids = barbearias.map(b => b.id);
+    const placeholders = ids.map(() => '?').join(','); // '?, ?, ?'
+
+    // 3) buscar os agendamentos para essas barbearias
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        i.id,
+        i.usuario_id,
+        i.estabelecimento_id,
+        i.plano_id,
+        i.proxima_data_cobrança AS proximo_pag,
+        i.status,
+        u.nome AS usuario_nome,
+        e.nome AS estabelecimento_nome
+      FROM inscricoes i
+      LEFT JOIN usuario u ON u.id = i.usuario_id
+      LEFT JOIN establishments e ON e.id = i.estabelecimento_id
+      WHERE i.estabelecimento_id IN (${placeholders})
+      ORDER BY i.proxima_data_cobrança DESC
+      `,
+      ids
+    );
+
+    return res.json(rows);
+  } catch (erro) {
+    console.error('/agendamentos/minha-barbearia erro:', erro);
+    return res.status(500).json({ erro: 'Erro ao buscar agendamentos da(s) barbearia(s)' });
+  }
+});
 
 // Buscar horários disponíveis de um estabelecimento
 app.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req, res) => {
