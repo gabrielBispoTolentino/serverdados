@@ -802,40 +802,331 @@ app.patch('/agendamentos/:id/pagar', async (req, res) => {
   }
 });
 
-//==========================PLANOS (SUBSCRIPTION PLANS)=========================
+//==========================PLANOS (SUBSCRIPTION PLANS - PARTNERSHIP MODEL)=========================
 
-// Criar plano (Admin)
+// Criar plano (Admin) - Automaticamente adiciona criador como parceiro
 app.post('/planos', async (req, res) => {
   try {
-    const { estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial } = req.body;
+    const { criador_estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial, is_public } = req.body;
 
-    if (!estabelecimento_id || !nome || !preco || !ciclo_pagamento) {
-      return res.status(400).json({ erro: 'Campos obrigatórios: estabelecimento_id, nome, preco, ciclo_pagamento' });
+    if (!criador_estabelecimento_id || !nome || !preco || !ciclo_pagamento) {
+      return res.status(400).json({ erro: 'Campos obrigatórios: criador_estabelecimento_id, nome, preco, ciclo_pagamento' });
     }
 
-    const [result] = await pool.execute(
-      `INSERT INTO planos 
-       (estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial, active, criado_em) 
-       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [estabelecimento_id, nome, description || null, preco, ciclo_pagamento, dias_freetrial || 0]
-    );
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    res.status(201).json({ mensagem: 'Plano criado com sucesso', id: result.insertId });
+    try {
+      // 1. Criar o plano
+      const [result] = await connection.execute(
+        `INSERT INTO planos 
+         (criador_estabelecimento_id, estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial, is_public, active, criado_em) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+        [criador_estabelecimento_id, criador_estabelecimento_id, nome, description || null, preco, ciclo_pagamento, dias_freetrial || 0, is_public !== false ? 1 : 0]
+      );
+
+      const planoId = result.insertId;
+
+      // 2. Adicionar criador como primeiro parceiro
+      await connection.execute(
+        `INSERT INTO plano_parcerias (plano_id, estabelecimento_id, status) 
+         VALUES (?, ?, 'ativo')`,
+        [planoId, criador_estabelecimento_id]
+      );
+
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        mensagem: 'Plano criado com sucesso',
+        id: planoId
+      });
+
+    } catch (err) {
+      await connection.rollback();
+      connection.release();
+      throw err;
+    }
+
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar plano' });
   }
 });
 
-// Listar planos de um estabelecimento
+// Listar planos de um estabelecimento (criados + parcerias)
+app.get('/planos/meus/:estabelecimentoId', async (req, res) => {
+  try {
+    const { estabelecimentoId } = req.params;
+
+    const [planos] = await pool.execute(
+      `SELECT 
+        p.id, 
+        p.nome, 
+        p.description, 
+        p.preco, 
+        p.ciclo_pagamento, 
+        p.dias_freetrial, 
+        p.active,
+        p.is_public,
+        p.criador_estabelecimento_id,
+        p.criado_em,
+        e.nome AS criador_nome,
+        CASE 
+          WHEN p.criador_estabelecimento_id = ? THEN 'criador'
+          ELSE 'parceiro'
+        END AS tipo,
+        (SELECT COUNT(*) FROM plano_parcerias pp WHERE pp.plano_id = p.id AND pp.status = 'ativo') AS num_parceiros
+       FROM planos p
+       LEFT JOIN establishments e ON e.id = p.criador_estabelecimento_id
+       INNER JOIN plano_parcerias pp ON pp.plano_id = p.id
+       WHERE pp.estabelecimento_id = ? 
+         AND pp.status = 'ativo'
+         AND p.deletado_em IS NULL
+       ORDER BY tipo DESC, p.criado_em DESC`,
+      [estabelecimentoId, estabelecimentoId]
+    );
+
+    res.json(planos);
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos' });
+  }
+});
+
+// Marketplace - Listar planos disponíveis para parceria
+app.get('/planos/marketplace', async (req, res) => {
+  try {
+    const { estabelecimento_id } = req.query;
+
+    if (!estabelecimento_id) {
+      return res.status(400).json({ erro: 'estabelecimento_id é obrigatório' });
+    }
+
+    const [planos] = await pool.execute(
+      `SELECT 
+        p.id, 
+        p.nome, 
+        p.description, 
+        p.preco, 
+        p.ciclo_pagamento, 
+        p.dias_freetrial,
+        p.criador_estabelecimento_id,
+        e.nome AS criador_nome,
+        e.cidade AS criador_cidade,
+        (SELECT COUNT(*) FROM plano_parcerias pp WHERE pp.plano_id = p.id AND pp.status = 'ativo') AS num_parceiros
+       FROM planos p
+       LEFT JOIN establishments e ON e.id = p.criador_estabelecimento_id
+       WHERE p.is_public = 1 
+         AND p.active = 1 
+         AND p.deletado_em IS NULL
+         AND e.deletedo_em IS NULL
+         AND p.id NOT IN (
+           SELECT plano_id FROM plano_parcerias 
+           WHERE estabelecimento_id = ? AND status = 'ativo'
+         )
+       ORDER BY num_parceiros DESC, p.criado_em DESC`,
+      [estabelecimento_id]
+    );
+
+    res.json(planos);
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos do marketplace' });
+  }
+});
+
+// Participar de um plano (entrar em parceria)
+app.post('/planos/:planoId/participar', async (req, res) => {
+  try {
+    const { planoId } = req.params;
+    const { estabelecimento_id } = req.body;
+
+    if (!estabelecimento_id) {
+      return res.status(400).json({ erro: 'estabelecimento_id é obrigatório' });
+    }
+
+    // Verificar se o plano existe e é público
+    const [planos] = await pool.execute(
+      'SELECT id, is_public, criador_estabelecimento_id FROM planos WHERE id = ? AND active = 1 AND deletado_em IS NULL',
+      [planoId]
+    );
+
+    if (planos.length === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado ou inativo' });
+    }
+
+    if (!planos[0].is_public) {
+      return res.status(403).json({ erro: 'Este plano não está disponível para parceria' });
+    }
+
+    if (planos[0].criador_estabelecimento_id === parseInt(estabelecimento_id)) {
+      return res.status(400).json({ erro: 'Você já é o criador deste plano' });
+    }
+
+    // Verificar se já é parceiro
+    const [parceriaExistente] = await pool.execute(
+      'SELECT id, status FROM plano_parcerias WHERE plano_id = ? AND estabelecimento_id = ?',
+      [planoId, estabelecimento_id]
+    );
+
+    if (parceriaExistente.length > 0) {
+      if (parceriaExistente[0].status === 'ativo') {
+        return res.status(400).json({ erro: 'Você já é parceiro deste plano' });
+      } else {
+        // Reativar parceria
+        await pool.execute(
+          'UPDATE plano_parcerias SET status = \'ativo\', data_saida = NULL WHERE id = ?',
+          [parceriaExistente[0].id]
+        );
+        return res.json({ mensagem: 'Parceria reativada com sucesso' });
+      }
+    }
+
+    // Criar nova parceria
+    await pool.execute(
+      'INSERT INTO plano_parcerias (plano_id, estabelecimento_id, status) VALUES (?, ?, \'ativo\')',
+      [planoId, estabelecimento_id]
+    );
+
+    res.status(201).json({ mensagem: 'Parceria criada com sucesso' });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao participar do plano' });
+  }
+});
+
+// Sair de uma parceria
+app.delete('/planos/:planoId/sair', async (req, res) => {
+  try {
+    const { planoId } = req.params;
+    const { estabelecimento_id } = req.body;
+
+    if (!estabelecimento_id) {
+      return res.status(400).json({ erro: 'estabelecimento_id é obrigatório' });
+    }
+
+    // Verificar se é o criador
+    const [planos] = await pool.execute(
+      'SELECT criador_estabelecimento_id FROM planos WHERE id = ?',
+      [planoId]
+    );
+
+    if (planos.length === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado' });
+    }
+
+    if (planos[0].criador_estabelecimento_id === parseInt(estabelecimento_id)) {
+      return res.status(400).json({ erro: 'Criador não pode sair do plano. Para remover o plano, delete-o.' });
+    }
+
+    // Remover parceria
+    const [result] = await pool.execute(
+      'UPDATE plano_parcerias SET status = \'inativo\', data_saida = NOW() WHERE plano_id = ? AND estabelecimento_id = ?',
+      [planoId, estabelecimento_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ erro: 'Parceria não encontrada' });
+    }
+
+    res.json({ mensagem: 'Você saiu da parceria com sucesso' });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao sair da parceria' });
+  }
+});
+
+// Listar parceiros de um plano
+app.get('/planos/:planoId/parceiros', async (req, res) => {
+  try {
+    const { planoId } = req.params;
+
+    const [parceiros] = await pool.execute(
+      `SELECT 
+        pp.id,
+        pp.estabelecimento_id,
+        pp.status,
+        pp.data_entrada,
+        e.nome AS estabelecimento_nome,
+        e.cidade,
+        e.stado,
+        CASE 
+          WHEN p.criador_estabelecimento_id = pp.estabelecimento_id THEN 1
+          ELSE 0
+        END AS is_criador
+       FROM plano_parcerias pp
+       LEFT JOIN establishments e ON e.id = pp.estabelecimento_id
+       LEFT JOIN planos p ON p.id = pp.plano_id
+       WHERE pp.plano_id = ? AND pp.status = 'ativo' AND e.deletedo_em IS NULL
+       ORDER BY is_criador DESC, pp.data_entrada ASC`,
+      [planoId]
+    );
+
+    res.json(parceiros);
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar parceiros' });
+  }
+});
+
+// Listar todos os planos disponíveis (para usuários finais)
+app.get('/planos/disponiveis', async (req, res) => {
+  try {
+    const [planos] = await pool.execute(
+      `SELECT DISTINCT
+        p.id, 
+        p.nome, 
+        p.description, 
+        p.preco, 
+        p.ciclo_pagamento, 
+        p.dias_freetrial,
+        p.criador_estabelecimento_id,
+        e.nome AS criador_nome,
+        (SELECT COUNT(*) FROM plano_parcerias pp WHERE pp.plano_id = p.id AND pp.status = 'ativo') AS num_estabelecimentos
+       FROM planos p
+       LEFT JOIN establishments e ON e.id = p.criador_estabelecimento_id
+       INNER JOIN plano_parcerias pp ON pp.plano_id = p.id
+       WHERE p.active = 1 
+         AND p.deletado_em IS NULL 
+         AND e.deletedo_em IS NULL
+         AND pp.status = 'ativo'
+       ORDER BY num_estabelecimentos DESC, p.nome ASC`
+    );
+
+    res.json(planos);
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos disponíveis' });
+  }
+});
+
+// MANTER ROTA ANTIGA PARA COMPATIBILIDADE (redireciona para /planos/meus)
 app.get('/planos/estabelecimento/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const [planos] = await pool.execute(
-      `SELECT id, nome, description, preco, ciclo_pagamento, dias_freetrial, active, criado_em
-       FROM planos 
-       WHERE estabelecimento_id = ? AND deletado_em IS NULL
-       ORDER BY criado_em DESC`,
+      `SELECT 
+        p.id, 
+        p.nome, 
+        p.description, 
+        p.preco, 
+        p.ciclo_pagamento, 
+        p.dias_freetrial, 
+        p.active,
+        p.criado_em
+       FROM planos p
+       INNER JOIN plano_parcerias pp ON pp.plano_id = p.id
+       WHERE pp.estabelecimento_id = ? 
+         AND pp.status = 'ativo'
+         AND p.deletado_em IS NULL
+       ORDER BY p.criado_em DESC`,
       [id]
     );
     res.json(planos);
@@ -845,59 +1136,78 @@ app.get('/planos/estabelecimento/:id', async (req, res) => {
   }
 });
 
-// Listar todos os planos disponíveis
-app.get('/planos/disponiveis', async (req, res) => {
-  try {
-    const [planos] = await pool.execute(
-      `SELECT 
-        p.id, p.nome, p.description, p.preco, p.ciclo_pagamento, p.dias_freetrial,
-        p.estabelecimento_id, e.nome AS estabelecimento_nome
-       FROM planos p
-       LEFT JOIN establishments e ON e.id = p.estabelecimento_id
-       WHERE p.active = 1 AND p.deletado_em IS NULL AND e.deletedo_em IS NULL
-       ORDER BY p.nome, e.nome`
-    );
-    res.json(planos);
-  } catch (erro) {
-    console.error(erro);
-    res.status(500).json({ erro: 'Erro ao buscar planos disponíveis' });
-  }
-});
-
-// Atualizar plano
+// Atualizar plano (apenas criador)
 app.put('/planos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, description, preco, ciclo_pagamento, dias_freetrial, active } = req.body;
+    const { estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial, active, is_public } = req.body;
+
+    // Verificar se é o criador
+    const [planos] = await pool.execute(
+      'SELECT criador_estabelecimento_id FROM planos WHERE id = ? AND deletado_em IS NULL',
+      [id]
+    );
+
+    if (planos.length === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado' });
+    }
+
+    if (estabelecimento_id && planos[0].criador_estabelecimento_id !== parseInt(estabelecimento_id)) {
+      return res.status(403).json({ erro: 'Apenas o criador pode editar este plano' });
+    }
+
     const [result] = await pool.execute(
       `UPDATE planos 
        SET nome = ?, description = ?, preco = ?, ciclo_pagamento = ?, 
-           dias_freetrial = ?, active = ?, updated_em = NOW()
+           dias_freetrial = ?, active = ?, is_public = ?, updated_em = NOW()
        WHERE id = ? AND deletado_em IS NULL`,
-      [nome, description, preco, ciclo_pagamento, dias_freetrial, active, id]
+      [nome, description, preco, ciclo_pagamento, dias_freetrial, active, is_public !== undefined ? is_public : 1, id]
     );
+
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Plano não encontrado' });
     }
+
     res.json({ mensagem: 'Plano atualizado com sucesso' });
+
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao atualizar plano' });
   }
 });
 
-// Deletar plano (soft delete)
+// Deletar plano (soft delete - apenas criador)
 app.delete('/planos/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const { estabelecimento_id } = req.body;
+
+    // Verificar se é o criador
+    const [planos] = await pool.execute(
+      'SELECT criador_estabelecimento_id FROM planos WHERE id = ? AND deletado_em IS NULL',
+      [id]
+    );
+
+    if (planos.length === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado' });
+    }
+
+    if (estabelecimento_id && planos[0].criador_estabelecimento_id !== parseInt(estabelecimento_id)) {
+      return res.status(403).json({ erro: 'Apenas o criador pode deletar este plano' });
+    }
+
+    // Soft delete do plano (parcerias serão removidas por CASCADE)
     const [result] = await pool.execute(
       'UPDATE planos SET deletado_em = NOW() WHERE id = ? AND deletado_em IS NULL',
       [id]
     );
+
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Plano não encontrado' });
     }
+
     res.json({ mensagem: 'Plano deletado com sucesso' });
+
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao deletar plano' });
