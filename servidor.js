@@ -483,13 +483,24 @@ app.post('/agendamentos', async (req, res) => {
       return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
     }
 
-    // Verificar conflito de horário
+    // 1. Obter ID do dono do estabelecimento (Barbeiro)
+    const [estabelecimentos] = await pool.execute(
+      'SELECT dono_id FROM establishments WHERE id = ?',
+      [estabelecimento_id]
+    );
+
+    if (estabelecimentos.length === 0) {
+      return res.status(404).json({ erro: 'Estabelecimento não encontrado' });
+    }
+    const barbeiroId = estabelecimentos[0].dono_id;
+
+    // 2. Verificar conflito de horário na tabela agendamentos
     const [conflitos] = await pool.execute(`
-      SELECT id FROM inscricoes 
-      WHERE estabelecimento_id = ? 
-      AND proxima_data_cobrança = ? 
-      AND status IN ('ativo', 'free trial')
-    `, [estabelecimento_id, proximo_pag]);
+      SELECT id FROM agendamentos 
+      WHERE barbeiro_id = ? 
+      AND data_hora = ? 
+      AND status IN ('pendente', 'confirmado')
+    `, [barbeiroId, proximo_pag]);
 
     if (conflitos.length > 0) {
       return res.status(409).json({
@@ -497,32 +508,33 @@ app.post('/agendamentos', async (req, res) => {
       });
     }
 
-    // Iniciar transação para garantir integridade
+    // Iniciar transação
     const connection = await pool.getConnection();
     await connection.beginTransaction();
 
     try {
-      const [resultInscricao] = await connection.execute(
-        'INSERT INTO inscricoes (usuario_id, estabelecimento_id, plano_id, proxima_data_cobrança, status) VALUES (?, ?, ?, ?, ?)',
-        [usuario_id, estabelecimento_id, plano_id, proximo_pag, status]
+      // 3. Inserir em 'agendamentos'
+      const [resultAgendamento] = await connection.execute(
+        'INSERT INTO agendamentos (cliente_id, barbeiro_id, estabelecimento_id, data_hora, status, criado_em) VALUES (?, ?, ?, ?, ?, NOW())',
+        [usuario_id, barbeiroId, estabelecimento_id, proximo_pag, 'pendente']
       );
 
-      const inscricaoId = resultInscricao.insertId;
+      const agendamentoId = resultAgendamento.insertId;
       const valor = PLAN_PRICES[plano_id] || 0;
-      const metodoId = metodo_pagamento || 1; // Default: 1 (Dinheiro/Outro)
+      const metodoId = metodo_pagamento || 1;
 
-      // Inserir pagamento
+      // 4. Inserir Pagamento (usando agendamento_id)
       await connection.execute(
         `INSERT INTO pagamento 
-        (inscricao_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [inscricaoId, usuario_id, estabelecimento_id, valor, 'BRL', metodoId, 'pendente']
+        (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em) 
+        VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [agendamentoId, usuario_id, estabelecimento_id, valor, 'BRL', metodoId, 'pendente']
       );
 
       await connection.commit();
       connection.release();
 
-      res.status(201).json({ mensagem: 'Agendamento e pagamento criados com sucesso', id: inscricaoId });
+      res.status(201).json({ mensagem: 'Agendamento criado com sucesso', id: agendamentoId });
 
     } catch (err) {
       await connection.rollback();
@@ -546,21 +558,26 @@ app.get('/agendamentos', async (req, res) => {
     }
 
     const [rows] = await pool.execute(`
-      SELECT 
-        i.id,
-        i.usuario_id,
-        i.estabelecimento_id,
-        i.plano_id,
-       i.proxima_data_cobrança AS proximo_pag,
-        i.status,
+      SELECT DISTINCT
+        a.id,
+        a.cliente_id AS usuario_id,
+        e.id AS estabelecimento_id,
+        99 AS plano_id,
+        a.data_hora AS proximo_pag,
+        a.status,
         u.nome AS usuario_nome,
-        e.nome AS estabelecimento_nome
-      FROM inscricoes i
-      LEFT JOIN usuario u ON u.id = i.usuario_id
-      LEFT JOIN establishments e ON e.id = i.estabelecimento_id
-      WHERE i.usuario_id = ?
-      ORDER BY i.proxima_data_cobrança DESC
+        e.nome AS estabelecimento_nome,
+        (SELECT status FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS pagamento_status,
+        (SELECT quantidade FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS valor
+      FROM agendamentos a
+      LEFT JOIN usuario u ON u.id = a.cliente_id
+      LEFT JOIN establishments e ON e.id = a.estabelecimento_id
+      WHERE a.cliente_id = ?
+      ORDER BY a.data_hora DESC
     `, [usuario_id]);
+
+    console.log('Agendamentos retornados:', rows.length);
+    console.log('Dados:', JSON.stringify(rows, null, 2));
 
     res.json(rows);
 
@@ -591,17 +608,17 @@ app.get('/agendamentos/minha-barbearia', async (req, res) => {
       `
       SELECT
         i.id,
-        i.usuario_id,
-        i.estabelecimento_id,
-        i.plano_id,
-        i.proxima_data_cobrança AS proximo_pag,
-        i.status,
-        u.nome AS usuario_nome,
-        e.nome AS estabelecimento_nome
+      i.usuario_id,
+      i.estabelecimento_id,
+      i.plano_id,
+      i.proxima_data_cobrança AS proximo_pag,
+      i.status,
+      u.nome AS usuario_nome,
+      e.nome AS estabelecimento_nome
       FROM inscricoes i
       LEFT JOIN usuario u ON u.id = i.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
-      WHERE i.estabelecimento_id IN (${placeholders})
+      WHERE i.estabelecimento_id IN(${placeholders})
       ORDER BY i.proxima_data_cobrança DESC
       `,
       ids
@@ -624,17 +641,29 @@ app.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req, re
       return res.status(400).json({ erro: 'Data é obrigatória' });
     }
 
+    // 1. Obter Barbeiro ID
+    const [estabelecimentos] = await pool.execute(
+      'SELECT dono_id FROM establishments WHERE id = ?',
+      [estabelecimento_id]
+    );
+
+    if (estabelecimentos.length === 0) {
+      return res.status(404).json({ erro: 'Estabelecimento não encontrado' });
+    }
+    const barbeiroId = estabelecimentos[0].dono_id;
+
+
     // Buscar todos os horários ocupados nesse dia
     const [ocupados] = await pool.execute(`
-      SELECT proxima_data_cobrança 
-      FROM inscricoes 
-      WHERE estabelecimento_id = ? 
-      AND DATE(proxima_data_cobrança) = ?
-      AND status IN ('ativo', 'free trial')
-    `, [estabelecimento_id, data]);
+      SELECT data_hora 
+      FROM agendamentos 
+      WHERE barbeiro_id = ? 
+      AND DATE(data_hora) = ?
+      AND status IN ('pendente', 'confirmado')
+    `, [barbeiroId, data]);
 
     const horariosOcupados = ocupados.map(row =>
-      new Date(row.proxima_data_cobrança).toISOString()
+      new Date(row.data_hora).toISOString()
     );
 
     res.json({ horariosOcupados });
@@ -653,7 +682,7 @@ app.patch('/agendamentos/:id/cancelar', async (req, res) => {
 
     // Verificar se o agendamento pertence ao usuário
     const [agendamento] = await pool.execute(
-      'SELECT * FROM inscricoes WHERE id = ? AND usuario_id = ?',
+      'SELECT * FROM agendamentos WHERE id = ? AND cliente_id = ?',
       [id, usuario_id]
     );
 
@@ -663,7 +692,7 @@ app.patch('/agendamentos/:id/cancelar', async (req, res) => {
 
     // Atualizar status para cancelado
     await pool.execute(
-      'UPDATE inscricoes SET status = ? WHERE id = ?',
+      'UPDATE agendamentos SET status = ? WHERE id = ?',
       ['cancelado', id]
     );
 
@@ -687,7 +716,7 @@ app.patch('/agendamentos/:id/reagendar', async (req, res) => {
 
     // Verificar se o agendamento pertence ao usuário
     const [agendamento] = await pool.execute(
-      'SELECT * FROM inscricoes WHERE id = ? AND usuario_id = ?',
+      'SELECT * FROM agendamentos WHERE id = ? AND cliente_id = ?',
       [id, usuario_id]
     );
 
@@ -695,14 +724,16 @@ app.patch('/agendamentos/:id/reagendar', async (req, res) => {
       return res.status(404).json({ erro: 'Agendamento não encontrado' });
     }
 
+    const barbeiroId = agendamento[0].barbeiro_id;
+
     // Verificar conflito no novo horário
     const [conflitos] = await pool.execute(`
-      SELECT id FROM inscricoes 
-      WHERE estabelecimento_id = ? 
-      AND proxima_data_cobrança = ? 
-      AND status IN ('ativo', 'free trial')
+      SELECT id FROM agendamentos 
+      WHERE barbeiro_id = ? 
+      AND data_hora = ? 
+      AND status IN ('pendente', 'confirmado')
       AND id != ?
-    `, [agendamento[0].estabelecimento_id, nova_data, id]);
+    `, [barbeiroId, nova_data, id]);
 
     if (conflitos.length > 0) {
       return res.status(409).json({
@@ -712,7 +743,7 @@ app.patch('/agendamentos/:id/reagendar', async (req, res) => {
 
     // Atualizar data do agendamento
     await pool.execute(
-      'UPDATE inscricoes SET proxima_data_cobrança = ? WHERE id = ?',
+      'UPDATE agendamentos SET data_hora = ? WHERE id = ?',
       [nova_data, id]
     );
 
@@ -739,6 +770,246 @@ app.post('/avaliacoes', async (req, res) => {
     res.status(500).json({ erro: 'Erro ao criar avaliação' });
   }
 })
+
+// Pagar agendamento
+app.patch('/agendamentos/:id/pagar', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar se existe pagamento associado
+    const [pagamento] = await pool.execute(
+      'SELECT id FROM pagamento WHERE agendamento_id = ?',
+      [id]
+    );
+
+    if (pagamento.length === 0) {
+      return res.status(404).json({ erro: 'Pagamento não encontrado para este agendamento' });
+    }
+
+    // Atualizar pagamento para completo
+    await pool.execute(
+      `UPDATE pagamento 
+       SET status = 'completo', pago_em = NOW() 
+       WHERE agendamento_id = ?`,
+      [id]
+    );
+
+    res.json({ mensagem: 'Pagamento confirmado com sucesso' });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao confirmar pagamento' });
+  }
+});
+
+//==========================PLANOS (SUBSCRIPTION PLANS)=========================
+
+// Criar plano (Admin)
+app.post('/planos', async (req, res) => {
+  try {
+    const { estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial } = req.body;
+
+    if (!estabelecimento_id || !nome || !preco || !ciclo_pagamento) {
+      return res.status(400).json({ erro: 'Campos obrigatórios: estabelecimento_id, nome, preco, ciclo_pagamento' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO planos 
+       (estabelecimento_id, nome, description, preco, ciclo_pagamento, dias_freetrial, active, criado_em) 
+       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
+      [estabelecimento_id, nome, description || null, preco, ciclo_pagamento, dias_freetrial || 0]
+    );
+
+    res.status(201).json({ mensagem: 'Plano criado com sucesso', id: result.insertId });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao criar plano' });
+  }
+});
+
+// Listar planos de um estabelecimento
+app.get('/planos/estabelecimento/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [planos] = await pool.execute(
+      `SELECT id, nome, description, preco, ciclo_pagamento, dias_freetrial, active, criado_em
+       FROM planos 
+       WHERE estabelecimento_id = ? AND deletado_em IS NULL
+       ORDER BY criado_em DESC`,
+      [id]
+    );
+    res.json(planos);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos' });
+  }
+});
+
+// Listar todos os planos disponíveis
+app.get('/planos/disponiveis', async (req, res) => {
+  try {
+    const [planos] = await pool.execute(
+      `SELECT 
+        p.id, p.nome, p.description, p.preco, p.ciclo_pagamento, p.dias_freetrial,
+        p.estabelecimento_id, e.nome AS estabelecimento_nome
+       FROM planos p
+       LEFT JOIN establishments e ON e.id = p.estabelecimento_id
+       WHERE p.active = 1 AND p.deletado_em IS NULL AND e.deletedo_em IS NULL
+       ORDER BY p.nome, e.nome`
+    );
+    res.json(planos);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos disponíveis' });
+  }
+});
+
+// Atualizar plano
+app.put('/planos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nome, description, preco, ciclo_pagamento, dias_freetrial, active } = req.body;
+    const [result] = await pool.execute(
+      `UPDATE planos 
+       SET nome = ?, description = ?, preco = ?, ciclo_pagamento = ?, 
+           dias_freetrial = ?, active = ?, updated_em = NOW()
+       WHERE id = ? AND deletado_em IS NULL`,
+      [nome, description, preco, ciclo_pagamento, dias_freetrial, active, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado' });
+    }
+    res.json({ mensagem: 'Plano atualizado com sucesso' });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao atualizar plano' });
+  }
+});
+
+// Deletar plano (soft delete)
+app.delete('/planos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [result] = await pool.execute(
+      'UPDATE planos SET deletado_em = NOW() WHERE id = ? AND deletado_em IS NULL',
+      [id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado' });
+    }
+    res.json({ mensagem: 'Plano deletado com sucesso' });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao deletar plano' });
+  }
+});
+
+//==========================INSCRICOES (SUBSCRIPTIONS)=========================
+
+// Assinar plano
+app.post('/inscricoes', async (req, res) => {
+  try {
+    const { usuario_id, plano_id, pagamento_metodo_id } = req.body;
+
+    if (!usuario_id || !plano_id) {
+      return res.status(400).json({ erro: 'usuario_id e plano_id são obrigatórios' });
+    }
+
+    // Buscar informações do plano
+    const [planos] = await pool.execute(
+      'SELECT * FROM planos WHERE id = ? AND active = 1 AND deletado_em IS NULL',
+      [plano_id]
+    );
+
+    if (planos.length === 0) {
+      return res.status(404).json({ erro: 'Plano não encontrado ou inativo' });
+    }
+
+    const plano = planos[0];
+    const hoje = new Date();
+    const dataInicio = hoje.toISOString().split('T')[0];
+
+    // Calcular próxima data de cobrança
+    let proximaCobranca = new Date(hoje);
+    if (plano.dias_freetrial > 0) {
+      proximaCobranca.setDate(proximaCobranca.getDate() + plano.dias_freetrial);
+    } else {
+      switch (plano.ciclo_pagamento) {
+        case 'mensalmente':
+          proximaCobranca.setMonth(proximaCobranca.getMonth() + 1);
+          break;
+        case 'quartenamente':
+          proximaCobranca.setMonth(proximaCobranca.getMonth() + 3);
+          break;
+        case 'anual':
+          proximaCobranca.setFullYear(proximaCobranca.getFullYear() + 1);
+          break;
+      }
+    }
+
+    const status = plano.dias_freetrial > 0 ? 'free trial' : 'ativo';
+
+    const [result] = await pool.execute(
+      `INSERT INTO inscricoes 
+       (usuario_id, plano_id, estabelecimento_id, status, data_incio, proxima_data_cobrança, preço_periodo_atual, pagamento_metodo_id, criado_em) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [usuario_id, plano_id, plano.estabelecimento_id, status, dataInicio, proximaCobranca, plano.preco, pagamento_metodo_id || 1]
+    );
+
+    res.status(201).json({ mensagem: 'Inscrição criada com sucesso', id: result.insertId });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao criar inscrição' });
+  }
+});
+
+// Buscar inscrições do usuário
+app.get('/inscricoes/usuario/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [inscricoes] = await pool.execute(
+      `SELECT 
+        i.id, i.status, i.data_incio, i.proxima_data_cobrança, i.preço_periodo_atual,
+        p.nome AS plano_nome, p.description AS plano_description, p.ciclo_pagamento,
+        e.nome AS estabelecimento_nome
+       FROM inscricoes i
+       LEFT JOIN planos p ON p.id = i.plano_id
+       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
+       WHERE i.usuario_id = ? AND i.status IN ('ativo', 'free trial', 'atrasado')
+       ORDER BY i.criado_em DESC`,
+      [id]
+    );
+    res.json(inscricoes);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar inscrições' });
+  }
+});
+
+// Cancelar inscrição
+app.patch('/inscricoes/:id/cancelar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { motivo } = req.body;
+
+    const [result] = await pool.execute(
+      `UPDATE inscricoes 
+       SET status = 'cancelado', cancelado_por_user = 1, motivo_cancelamento = ?, updated_em = NOW()
+       WHERE id = ?`,
+      [motivo || null, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ erro: 'Inscrição não encontrada' });
+    }
+
+    res.json({ mensagem: 'Inscrição cancelada com sucesso' });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao cancelar inscrição' });
+  }
+});
+
 // Iniciar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
