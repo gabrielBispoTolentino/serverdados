@@ -475,15 +475,175 @@ const PLAN_PRICES = {
   3: 60.00  // Pacote Premium
 };
 
-app.post('/agendamentos', async (req, res) => {
-  try {
-    const { usuario_id, estabelecimento_id, plano_id, proximo_pag, status, metodo_pagamento } = req.body;
+// ============================================
+// SISTEMA DE BENEFÍCIOS CUSTOMIZÁVEIS
+// ============================================
 
-    if (!usuario_id || !estabelecimento_id || !plano_id || !proximo_pag || !status) {
-      return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+// Função auxiliar para calcular benefícios aplicáveis
+async function calcularBeneficios(pool, inscricaoId, usuarioId, servicoId, valorOriginal) {
+  try {
+    // 1. Buscar benefícios ativos do plano do usuário
+    const [beneficios] = await pool.execute(`
+            SELECT 
+                pb.*,
+                p.nome AS plano_nome
+            FROM plano_beneficios pb
+            INNER JOIN inscricoes i ON i.plano_id = pb.plano_id
+            INNER JOIN planos p ON p.id = pb.plano_id
+            WHERE i.id = ?
+              AND pb.ativo = 1
+              AND (pb.servico_id IS NULL OR pb.servico_id = ?)
+            ORDER BY pb.ordem ASC
+        `, [inscricaoId, servicoId]);
+
+    if (beneficios.length === 0) {
+      return {
+        valorFinal: valorOriginal,
+        descontoTotal: 0,
+        beneficiosAplicados: []
+      };
     }
 
-    // 1. Obter ID do dono do estabelecimento (Barbeiro)
+    let valorAtual = valorOriginal;
+    let descontoTotal = 0;
+    const beneficiosAplicados = [];
+
+    // 2. Aplicar cada benefício em ordem
+    for (const beneficio of beneficios) {
+      let aplicar = false;
+      let descontoAplicado = 0;
+
+      // Verificar condição
+      switch (beneficio.condicao_tipo) {
+        case 'sempre':
+          aplicar = true;
+          break;
+
+        case 'primeira_vez':
+          // Verificar se é o primeiro uso
+          const [usos] = await pool.execute(`
+                        SELECT COUNT(*) as total
+                        FROM uso_servicos
+                        WHERE inscricao_id = ?
+                    `, [inscricaoId]);
+          aplicar = usos[0].total === 0;
+          break;
+
+        case 'apos_x_usos':
+          // Contar usos do serviço específico no mês
+          const [usosServico] = await pool.execute(`
+                        SELECT COUNT(*) as total
+                        FROM uso_servicos
+                        WHERE inscricao_id = ?
+                          AND servico_id = ?
+                          AND MONTH(data_uso) = MONTH(NOW())
+                          AND YEAR(data_uso) = YEAR(NOW())
+                    `, [inscricaoId, servicoId]);
+
+          // Aplicar se atingiu o número de usos
+          aplicar = (usosServico[0].total + 1) % beneficio.condicao_valor === 0;
+          break;
+
+        case 'dia_semana':
+          // Verificar dia da semana (0 = Domingo, 6 = Sábado)
+          const diaSemana = new Date().getDay();
+          aplicar = diaSemana === beneficio.condicao_valor;
+          break;
+      }
+
+      // Aplicar desconto se condição foi atendida
+      if (aplicar) {
+        if (beneficio.tipo_beneficio === 'desconto_percentual' && beneficio.desconto_percentual) {
+          descontoAplicado = valorAtual * (beneficio.desconto_percentual / 100);
+        } else if (beneficio.tipo_beneficio === 'desconto_fixo' && beneficio.desconto_fixo) {
+          descontoAplicado = Math.min(beneficio.desconto_fixo, valorAtual);
+        }
+
+        if (descontoAplicado > 0) {
+          valorAtual -= descontoAplicado;
+          descontoTotal += descontoAplicado;
+          beneficiosAplicados.push({
+            id: beneficio.id,
+            tipo: beneficio.tipo_beneficio,
+            condicao: beneficio.condicao_tipo,
+            desconto: descontoAplicado,
+            descricao: getBeneficioDescricao(beneficio)
+          });
+        }
+      }
+    }
+
+    return {
+      valorFinal: Math.max(0, valorAtual), // Não pode ser negativo
+      descontoTotal,
+      beneficiosAplicados
+    };
+
+  } catch (erro) {
+    console.error('Erro ao calcular benefícios:', erro);
+    return {
+      valorFinal: valorOriginal,
+      descontoTotal: 0,
+      beneficiosAplicados: []
+    };
+  }
+}
+
+// Função auxiliar para gerar descrição do benefício
+function getBeneficioDescricao(beneficio) {
+  let desc = '';
+
+  switch (beneficio.condicao_tipo) {
+    case 'sempre':
+      desc = 'Benefício permanente';
+      break;
+    case 'primeira_vez':
+      desc = 'Desconto de primeira vez';
+      break;
+    case 'apos_x_usos':
+      desc = `Após ${beneficio.condicao_valor} usos`;
+      break;
+    case 'dia_semana':
+      const dias = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+      desc = `Desconto de ${dias[beneficio.condicao_valor]}`;
+      break;
+  }
+
+  if (beneficio.desconto_percentual) {
+    desc += ` - ${beneficio.desconto_percentual}% OFF`;
+  } else if (beneficio.desconto_fixo) {
+    desc += ` - R$ ${beneficio.desconto_fixo} OFF`;
+  }
+
+  return desc;
+}
+
+// ============================================
+// ENDPOINT ATUALIZADO DE AGENDAMENTO
+// ============================================
+
+app.post('/agendamentos', async (req, res) => {
+  try {
+    const { usuario_id, estabelecimento_id, servico_id, proximo_pag, metodo_pagamento } = req.body;
+
+    if (!usuario_id || !estabelecimento_id || !servico_id || !proximo_pag) {
+      return res.status(400).json({ erro: 'Campos obrigatórios: usuario_id, estabelecimento_id, servico_id, proximo_pag' });
+    }
+
+    // 1. Buscar informações do serviço
+    const [servicos] = await pool.execute(
+      'SELECT * FROM servicos WHERE id = ? AND ativo = 1',
+      [servico_id]
+    );
+
+    if (servicos.length === 0) {
+      return res.status(404).json({ erro: 'Serviço não encontrado' });
+    }
+
+    const servico = servicos[0];
+    const valorOriginal = parseFloat(servico.preco_base); // Converter para número
+
+    // 2. Obter ID do barbeiro
     const [estabelecimentos] = await pool.execute(
       'SELECT dono_id FROM establishments WHERE id = ?',
       [estabelecimento_id]
@@ -494,13 +654,13 @@ app.post('/agendamentos', async (req, res) => {
     }
     const barbeiroId = estabelecimentos[0].dono_id;
 
-    // 2. Verificar conflito de horário na tabela agendamentos
+    // 3. Verificar conflito de horário
     const [conflitos] = await pool.execute(`
-      SELECT id FROM agendamentos 
-      WHERE barbeiro_id = ? 
-      AND data_hora = ? 
-      AND status IN ('pendente', 'confirmado')
-    `, [barbeiroId, proximo_pag]);
+            SELECT id FROM agendamentos 
+            WHERE barbeiro_id = ? 
+            AND data_hora = ? 
+            AND status IN ('pendente', 'confirmado')
+        `, [barbeiroId, proximo_pag]);
 
     if (conflitos.length > 0) {
       return res.status(409).json({
@@ -508,33 +668,88 @@ app.post('/agendamentos', async (req, res) => {
       });
     }
 
+    // 4. Verificar assinatura ativa
+    const [inscricoes] = await pool.execute(`
+            SELECT i.id, i.plano_id, p.nome AS plano_nome
+            FROM inscricoes i
+            INNER JOIN planos p ON p.id = i.plano_id
+            WHERE i.usuario_id = ? 
+              AND i.estabelecimento_id = ?
+              AND i.status IN ('ativo', 'free trial')
+            ORDER BY i.criado_em DESC
+            LIMIT 1
+        `, [usuario_id, estabelecimento_id]);
+
+    let inscricaoId = null;
+    let valorFinal = valorOriginal;
+    let beneficiosInfo = {
+      descontoTotal: 0,
+      beneficiosAplicados: []
+    };
+
+    // 5. Calcular benefícios se tiver assinatura
+    if (inscricoes.length > 0) {
+      inscricaoId = inscricoes[0].id;
+      beneficiosInfo = await calcularBeneficios(pool, inscricaoId, usuario_id, servico_id, valorOriginal);
+      valorFinal = beneficiosInfo.valorFinal;
+
+      console.log(`Assinatura encontrada! Plano: ${inscricoes[0].plano_nome}`);
+      console.log(`Valor original: R$ ${valorOriginal.toFixed(2)}`);
+      console.log(`Desconto total: R$ ${beneficiosInfo.descontoTotal.toFixed(2)}`);
+      console.log(`Valor final: R$ ${valorFinal.toFixed(2)}`);
+      console.log(`Benefícios aplicados:`, beneficiosInfo.beneficiosAplicados);
+    }
+
     // Iniciar transação
     const connection = await pool.getConnection();
     await connection.beginTransaction();
 
     try {
-      // 3. Inserir em 'agendamentos'
+      // 6. Inserir agendamento
       const [resultAgendamento] = await connection.execute(
         'INSERT INTO agendamentos (cliente_id, barbeiro_id, estabelecimento_id, data_hora, status, criado_em) VALUES (?, ?, ?, ?, ?, NOW())',
         [usuario_id, barbeiroId, estabelecimento_id, proximo_pag, 'pendente']
       );
 
       const agendamentoId = resultAgendamento.insertId;
-      const valor = PLAN_PRICES[plano_id] || 0;
       const metodoId = metodo_pagamento || 1;
 
-      // 4. Inserir Pagamento (usando agendamento_id)
+      // 7. Inserir Pagamento
       await connection.execute(
         `INSERT INTO pagamento 
-        (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em) 
-        VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [agendamentoId, usuario_id, estabelecimento_id, valor, 'BRL', metodoId, 'pendente']
+                (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [inscricaoId, agendamentoId, usuario_id, estabelecimento_id, valorFinal, 'BRL', metodoId, 'pendente']
       );
+
+      // 8. Registrar uso do serviço (se tiver assinatura)
+      if (inscricaoId) {
+        const beneficioAplicadoId = beneficiosInfo.beneficiosAplicados.length > 0
+          ? beneficiosInfo.beneficiosAplicados[0].id
+          : null;
+
+        await connection.execute(
+          `INSERT INTO uso_servicos 
+                    (inscricao_id, usuario_id, servico_id, agendamento_id, valor_pago, beneficio_aplicado_id) 
+                    VALUES (?, ?, ?, ?, ?, ?)`,
+          [inscricaoId, usuario_id, servico_id, agendamentoId, valorFinal, beneficioAplicadoId]
+        );
+      }
 
       await connection.commit();
       connection.release();
 
-      res.status(201).json({ mensagem: 'Agendamento criado com sucesso', id: agendamentoId });
+      // Resposta
+      res.status(201).json({
+        mensagem: 'Agendamento criado com sucesso',
+        id: agendamentoId,
+        servico: servico.nome,
+        valor_original: valorOriginal,
+        valor_final: valorFinal,
+        desconto_total: beneficiosInfo.descontoTotal,
+        beneficios_aplicados: beneficiosInfo.beneficiosAplicados,
+        tem_assinatura: inscricaoId !== null
+      });
 
     } catch (err) {
       await connection.rollback();
@@ -1216,7 +1431,7 @@ app.delete('/planos/:id', async (req, res) => {
 
 //==========================INSCRICOES (SUBSCRIPTIONS)=========================
 
-// Assinar plano
+// Assinar plano (com criação de pagamento)
 app.post('/inscricoes', async (req, res) => {
   try {
     const { usuario_id, plano_id, pagamento_metodo_id } = req.body;
@@ -1258,15 +1473,52 @@ app.post('/inscricoes', async (req, res) => {
     }
 
     const status = plano.dias_freetrial > 0 ? 'free trial' : 'ativo';
+    const metodoId = pagamento_metodo_id || 1;
 
-    const [result] = await pool.execute(
-      `INSERT INTO inscricoes 
-       (usuario_id, plano_id, estabelecimento_id, status, data_incio, proxima_data_cobrança, preço_periodo_atual, pagamento_metodo_id, criado_em) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [usuario_id, plano_id, plano.estabelecimento_id, status, dataInicio, proximaCobranca, plano.preco, pagamento_metodo_id || 1]
-    );
+    // Iniciar transação
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    res.status(201).json({ mensagem: 'Inscrição criada com sucesso', id: result.insertId });
+    try {
+      // 1. Criar inscrição
+      const [resultInscricao] = await connection.execute(
+        `INSERT INTO inscricoes 
+         (usuario_id, plano_id, estabelecimento_id, status, data_incio, proxima_data_cobrança, preço_periodo_atual, pagamento_metodo_id, criado_em) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [usuario_id, plano_id, plano.estabelecimento_id, status, dataInicio, proximaCobranca, plano.preco, metodoId]
+      );
+
+      const inscricaoId = resultInscricao.insertId;
+
+      // 2. Criar pagamento (se não for free trial, pagamento imediato; se for, pendente para depois do trial)
+      const statusPagamento = plano.dias_freetrial > 0 ? 'pendente' : 'pendente';
+      const dataLimite = plano.dias_freetrial > 0
+        ? proximaCobranca.toISOString().split('T')[0]
+        : new Date(hoje.setDate(hoje.getDate() + 7)).toISOString().split('T')[0]; // 7 dias para pagar
+
+      await connection.execute(
+        `INSERT INTO pagamento 
+         (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, data_limite, criado_em) 
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [inscricaoId, usuario_id, plano.estabelecimento_id, plano.preco, 'BRL', metodoId, statusPagamento, dataLimite]
+      );
+
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        mensagem: 'Inscrição criada com sucesso',
+        id: inscricaoId,
+        free_trial: plano.dias_freetrial > 0,
+        proxima_cobranca: proximaCobranca
+      });
+
+    } catch (err) {
+      await connection.rollback();
+      connection.release();
+      throw err;
+    }
+
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar inscrição' });
@@ -1281,7 +1533,8 @@ app.get('/inscricoes/usuario/:id', async (req, res) => {
       `SELECT 
         i.id, i.status, i.data_incio, i.proxima_data_cobrança, i.preço_periodo_atual,
         p.nome AS plano_nome, p.description AS plano_description, p.ciclo_pagamento,
-        e.nome AS estabelecimento_nome
+        e.nome AS estabelecimento_nome,
+        e.id AS estabelecimento_id
        FROM inscricoes i
        LEFT JOIN planos p ON p.id = i.plano_id
        LEFT JOIN establishments e ON e.id = i.estabelecimento_id
@@ -1317,6 +1570,107 @@ app.patch('/inscricoes/:id/cancelar', async (req, res) => {
   } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao cancelar inscrição' });
+  }
+});
+
+// Listar planos disponíveis de um estabelecimento (para assinatura)
+app.get('/planos/estabelecimento/:id/disponiveis', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [planos] = await pool.execute(
+      `SELECT DISTINCT
+        p.id, 
+        p.nome, 
+        p.description, 
+        p.preco, 
+        p.ciclo_pagamento, 
+        p.dias_freetrial,
+        p.active
+       FROM planos p
+       INNER JOIN plano_parcerias pp ON pp.plano_id = p.id
+       WHERE pp.estabelecimento_id = ? 
+         AND pp.status = 'ativo'
+         AND p.active = 1 
+         AND p.deletado_em IS NULL
+       ORDER BY p.preco ASC`,
+      [id]
+    );
+
+    res.json(planos);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar planos disponíveis' });
+  }
+});
+
+// ============================================
+// ENDPOINTS DE GERENCIAMENTO DE BENEFÍCIOS
+// ============================================
+
+// Listar benefícios de um plano
+app.get('/planos/:planoId/beneficios', async (req, res) => {
+  try {
+    const { planoId } = req.params;
+
+    const [beneficios] = await pool.execute(`
+      SELECT 
+        pb.*,
+        s.nome AS servico_nome,
+        s.preco_base AS servico_preco
+      FROM plano_beneficios pb
+      LEFT JOIN servicos s ON s.id = pb.servico_id
+      WHERE pb.plano_id = ? AND pb.ativo = 1
+      ORDER BY pb.ordem ASC
+    `, [planoId]);
+
+    res.json(beneficios);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar benefícios' });
+  }
+});
+
+// Adicionar benefício a um plano
+app.post('/planos/:planoId/beneficios', async (req, res) => {
+  try {
+    const { planoId } = req.params;
+    const {
+      tipo_beneficio,
+      servico_id,
+      condicao_tipo,
+      condicao_valor,
+      desconto_percentual,
+      desconto_fixo,
+      ordem
+    } = req.body;
+
+    const [result] = await pool.execute(`
+      INSERT INTO plano_beneficios 
+      (plano_id, tipo_beneficio, servico_id, condicao_tipo, condicao_valor, desconto_percentual, desconto_fixo, ordem)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [planoId, tipo_beneficio, servico_id || null, condicao_tipo, condicao_valor || null, desconto_percentual || null, desconto_fixo || null, ordem || 0]);
+
+    res.status(201).json({
+      mensagem: 'Benefício adicionado com sucesso',
+      id: result.insertId
+    });
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao adicionar benefício' });
+  }
+});
+
+// Listar serviços disponíveis
+app.get('/servicos', async (req, res) => {
+  try {
+    const [servicos] = await pool.execute(
+      'SELECT * FROM servicos WHERE ativo = 1 ORDER BY nome ASC'
+    );
+    res.json(servicos);
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao buscar serviços' });
   }
 });
 
