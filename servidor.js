@@ -17,11 +17,11 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const storageProfile = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, 'uploads/profile-photos');
-    
+
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
-    
+
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
@@ -35,11 +35,11 @@ const storageProfile = multer.diskStorage({
 const storageEstablishment = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, 'uploads/establishment-photos');
-    
+
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
-    
+
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
@@ -53,7 +53,7 @@ const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
-  
+
   if (mimetype && extname) {
     return cb(null, true);
   } else {
@@ -92,7 +92,7 @@ const DEFAULT_ESTABLISHMENT_PHOTO = '/uploads/establishment-photos/default-estab
 app.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
   try {
     const { nome, email, senha, cpf, telefone, role } = req.body;
-    
+
     if (!nome || !email || !senha || !cpf || !telefone || !role) {
       if (req.file) {
         fs.unlinkSync(req.file.path);
@@ -117,11 +117,11 @@ app.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     });
   } catch (erro) {
     console.error(erro);
-    
+
     if (req.file) {
       fs.unlinkSync(req.file.path);
     }
-    
+
     res.status(500).json({ erro: 'Erro ao criar usuário' });
   }
 });
@@ -139,7 +139,7 @@ app.get('/usuarios', async (req, res) => {
 app.post('/login', async (req, res) => {
   try {
     const { usuario, senha } = req.body;
-    
+
     if (!usuario || !senha) {
       return res.status(400).json({ erro: 'Usuário e senha são obrigatórios' });
     }
@@ -207,7 +207,7 @@ app.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     }
 
     let fotoUrl = usuarioAtual[0].imagem_url;
-    
+
     if (req.file) {
       if (fotoUrl && fotoUrl !== DEFAULT_PROFILE_PHOTO) {
         const oldPhotoPath = path.join(__dirname, fotoUrl);
@@ -215,7 +215,7 @@ app.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
           fs.unlinkSync(oldPhotoPath);
         }
       }
-      
+
       fotoUrl = `/uploads/profile-photos/${req.file.filename}`;
     }
 
@@ -228,17 +228,17 @@ app.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
       return res.status(404).json({ erro: 'Usuário não encontrado' });
     }
 
-    res.json({ 
+    res.json({
       mensagem: 'Usuário atualizado com sucesso',
       fotoUrl: fotoUrl
     });
   } catch (erro) {
     console.error(erro);
-    
+
     if (req.file) {
       fs.unlinkSync(req.file.path);
     }
-    
+
     res.status(500).json({ erro: 'Erro ao atualizar usuário' });
   }
 });
@@ -246,12 +246,12 @@ app.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
 app.delete('/usuarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const [usuario] = await pool.execute(
       'SELECT imagem_url FROM usuario WHERE id = ?',
       [id]
     );
-    
+
     const [result] = await pool.execute('DELETE FROM usuario WHERE id = ?', [id]);
 
     if (result.affectedRows === 0) {
@@ -342,7 +342,7 @@ app.get('/establishments/:id', async (req, res) => {
 app.post('/establishments', uploadEstablishment.single('foto'), async (req, res) => {
   try {
     const { dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
-    
+
     if (!dono_id || !nome || !rua || !cidade || !stado || !cep) {
       if (req.file) {
         fs.unlinkSync(req.file.path);
@@ -370,11 +370,11 @@ app.post('/establishments', uploadEstablishment.single('foto'), async (req, res)
     });
   } catch (erro) {
     console.error(erro);
-    
+
     if (req.file) {
       fs.unlinkSync(req.file.path);
     }
-    
+
     res.status(500).json({ erro: 'Erro ao criar estabelecimento' });
   }
 });
@@ -397,7 +397,7 @@ app.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, r
     }
 
     let imagemUrl = estabelecimentoAtual[0].imagem_url;
-    
+
     if (req.file) {
       if (imagemUrl && imagemUrl !== DEFAULT_ESTABLISHMENT_PHOTO) {
         const oldPhotoPath = path.join(__dirname, imagemUrl);
@@ -405,7 +405,7 @@ app.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, r
           fs.unlinkSync(oldPhotoPath);
         }
       }
-      
+
       imagemUrl = `/uploads/establishment-photos/${req.file.filename}`;
     }
 
@@ -420,17 +420,17 @@ app.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, r
       return res.status(404).json({ erro: 'Estabelecimento não encontrado' });
     }
 
-    res.json({ 
+    res.json({
       mensagem: 'Estabelecimento atualizado com sucesso',
       imagemUrl: imagemUrl
     });
   } catch (erro) {
     console.error(erro);
-    
+
     if (req.file) {
       fs.unlinkSync(req.file.path);
     }
-    
+
     res.status(500).json({ erro: 'Erro ao atualizar estabelecimento' });
   }
 });
@@ -438,12 +438,12 @@ app.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, r
 app.delete('/establishments/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const [estabelecimento] = await pool.execute(
       'SELECT imagem_url FROM establishments WHERE id = ? AND deletedo_em IS NULL',
       [id]
     );
-    
+
     // Soft delete
     const [result] = await pool.execute(
       'UPDATE establishments SET deletedo_em = NOW() WHERE id = ? AND deletedo_em IS NULL',
@@ -469,9 +469,16 @@ app.delete('/establishments/:id', async (req, res) => {
   }
 });
 //==========================AGENDAMENTO=========================
+const PLAN_PRICES = {
+  1: 25.00, // Corte Simples
+  2: 40.00, // Corte + Barba
+  3: 60.00  // Pacote Premium
+};
+
 app.post('/agendamentos', async (req, res) => {
-  try{
-    const { usuario_id, estabelecimento_id, plano_id, proximo_pag, status } = req.body;
+  try {
+    const { usuario_id, estabelecimento_id, plano_id, proximo_pag, status, metodo_pagamento } = req.body;
+
     if (!usuario_id || !estabelecimento_id || !plano_id || !proximo_pag || !status) {
       return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
     }
@@ -485,17 +492,45 @@ app.post('/agendamentos', async (req, res) => {
     `, [estabelecimento_id, proximo_pag]);
 
     if (conflitos.length > 0) {
-      return res.status(409).json({ 
-        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.' 
+      return res.status(409).json({
+        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.'
       });
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO inscricoes (usuario_id, estabelecimento_id, plano_id, proxima_data_cobrança, status) VALUES (?, ?, ?, ?, ?)',
-      [usuario_id, estabelecimento_id, plano_id, proximo_pag, status]
-    );
-    res.status(201).json({ mensagem: 'Agendamento criado com sucesso', id: result.insertId });
-  }catch (erro) {
+    // Iniciar transação para garantir integridade
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const [resultInscricao] = await connection.execute(
+        'INSERT INTO inscricoes (usuario_id, estabelecimento_id, plano_id, proxima_data_cobrança, status) VALUES (?, ?, ?, ?, ?)',
+        [usuario_id, estabelecimento_id, plano_id, proximo_pag, status]
+      );
+
+      const inscricaoId = resultInscricao.insertId;
+      const valor = PLAN_PRICES[plano_id] || 0;
+      const metodoId = metodo_pagamento || 1; // Default: 1 (Dinheiro/Outro)
+
+      // Inserir pagamento
+      await connection.execute(
+        `INSERT INTO pagamento 
+        (inscricao_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [inscricaoId, usuario_id, estabelecimento_id, valor, 'BRL', metodoId, 'pendente']
+      );
+
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({ mensagem: 'Agendamento e pagamento criados com sucesso', id: inscricaoId });
+
+    } catch (err) {
+      await connection.rollback();
+      connection.release();
+      throw err;
+    }
+
+  } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar agendamento' });
   }
@@ -598,7 +633,7 @@ app.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req, re
       AND status IN ('ativo', 'free trial')
     `, [estabelecimento_id, data]);
 
-    const horariosOcupados = ocupados.map(row => 
+    const horariosOcupados = ocupados.map(row =>
       new Date(row.proxima_data_cobrança).toISOString()
     );
 
@@ -670,8 +705,8 @@ app.patch('/agendamentos/:id/reagendar', async (req, res) => {
     `, [agendamento[0].estabelecimento_id, nova_data, id]);
 
     if (conflitos.length > 0) {
-      return res.status(409).json({ 
-        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.' 
+      return res.status(409).json({
+        erro: 'Este horário já está ocupado. Por favor, escolha outro horário.'
       });
     }
 
@@ -692,28 +727,29 @@ app.patch('/agendamentos/:id/reagendar', async (req, res) => {
 
 //==========================AVALIACAO=========================
 app.post('/avaliacoes', async (req, res) => {
-  try{
+  try {
     const { usuario_id, estabelecimento_id, rating, comentario } = req.body;
     const [result] = await pool.execute(
       'INSERT INTO avaliacoes (usuario_id, id_estabelecimento, score, comment) VALUES (?, ?, ?, ?)',
       [usuario_id, estabelecimento_id, rating, comentario]
     );
     res.status(201).json({ mensagem: 'Avaliação criada com sucesso', id: result.insertId });
-  }catch (erro) {
+  } catch (erro) {
     console.error(erro);
     res.status(500).json({ erro: 'Erro ao criar avaliação' });
-  }})
+  }
+})
 // Iniciar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
-  
+
   // Criar diretórios de upload se não existirem
   const dirs = [
     path.join(__dirname, 'uploads/profile-photos'),
     path.join(__dirname, 'uploads/establishment-photos')
   ];
-  
+
   dirs.forEach(dir => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
