@@ -1673,6 +1673,77 @@ app.get('/servicos', async (req, res) => {
     res.status(500).json({ erro: 'Erro ao buscar serviços' });
   }
 });
+//================RELATORIOLUCRO
+app.post('/report-lucro/auto', async (req, res) => {
+  try {
+    const { estabelecimento_id, periodo_comeco, periodo_final } = req.body;
+
+    if (!estabelecimento_id || !periodo_comeco || !periodo_final) {
+      return res.status(400).json({
+        erro: 'Campos obrigatórios: estabelecimento_id, periodo_comeco, periodo_final'
+      });
+    }
+
+    // 1. Somar pagamentos completos
+    const [lucroRows] = await pool.execute(
+      `SELECT 
+          COALESCE(SUM(quantidade), 0) AS lucro_total
+       FROM pagamento
+       WHERE estabelecimento_id = ?
+         AND status = 'completo'
+         AND pago_em BETWEEN ? AND ?`,
+      [estabelecimento_id, periodo_comeco, periodo_final]
+    );
+
+    const lucro_total = Number(lucroRows[0].lucro_total);
+
+    // 2. Somar pagamentos reembolsados
+    const [reembRows] = await pool.execute(
+      `SELECT 
+          COALESCE(SUM(quantidade), 0) AS reembolso_total
+       FROM pagamento
+       WHERE estabelecimento_id = ?
+         AND status = 'reembolsado'
+         AND pago_em BETWEEN ? AND ?`,
+      [estabelecimento_id, periodo_comeco, periodo_final]
+    );
+
+    const reembolso_total = Number(reembRows[0].reembolso_total);
+
+    // 3. Inserir ou atualizar relatório
+    await pool.execute(
+      `INSERT INTO report_lucro
+        (estabelecimento_id, periodo_começo, periodo_final, lucro_total, reembolso_total)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         lucro_total = VALUES(lucro_total),
+         reembolso_total = VALUES(reembolso_total),
+         generado_em = CURRENT_TIMESTAMP`,
+      [
+        estabelecimento_id,
+        periodo_comeco,
+        periodo_final,
+        lucro_total,
+        reembolso_total
+      ]
+    );
+
+    res.json({
+      mensagem: 'Relatório de lucro gerado automaticamente com sucesso!',
+      dados: {
+        estabelecimento_id,
+        periodo_comeco,
+        periodo_final,
+        lucro_total,
+        reembolso_total
+      }
+    });
+
+  } catch (erro) {
+    console.error(erro);
+    res.status(500).json({ erro: 'Erro ao gerar relatório automático' });
+  }
+});
 
 // Iniciar servidor
 const PORT = process.env.PORT || 3000;
