@@ -1744,6 +1744,38 @@ app.post('/report-lucro/auto', async (req, res) => {
     res.status(500).json({ erro: 'Erro ao gerar relatório automático' });
   }
 });
+app.get('/report-lucro', async (req, res) => {
+  try {
+    const { estabelecimento_id } = req.query;
+
+    if (!estabelecimento_id) {
+      return res.status(400).json({
+        erro: 'estabelecimento_id é obrigatório'
+      });
+    }
+
+    const [relatorios] = await pool.execute(
+      `SELECT 
+        id,
+        estabelecimento_id,
+        periodo_começo,
+        periodo_final,
+        lucro_total,
+        reembolso_total,
+        generado_em
+       FROM report_lucro
+       WHERE estabelecimento_id = ?
+       ORDER BY periodo_começo DESC`,
+      [estabelecimento_id]
+    );
+
+    res.json(relatorios);
+
+  } catch (erro) {
+    console.error('Erro ao buscar relatórios:', erro);
+    res.status(500).json({ erro: 'Erro ao buscar relatórios de lucro' });
+  }
+});
 
 // Iniciar servidor
 const PORT = process.env.PORT || 3000;
