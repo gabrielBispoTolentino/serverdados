@@ -4,6 +4,7 @@
   "description": "",
   "main": "servidor.js",
   "scripts": {
+    "start": "node servidor.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,8 +13,9 @@
   "type": "commonjs",
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
     "express": "^5.1.0",
     "multer": "^2.0.2",
-    "mysql2": "^3.15.3"
+    "pg": "^8.16.3"
   }
 }
