@@ -14,7 +14,9 @@ router.post('/agendamentos', async (req, res) => {
       });
     }
 
-    const [servicos] = await pool.execute('SELECT * FROM servicos WHERE id = ? AND ativo = 1', [servico_id]);
+    const [servicos] = await pool.execute('SELECT * FROM servicos WHERE id = ? AND ativo = 1', [
+      servico_id,
+    ]);
 
     if (servicos.length === 0) {
       return res.status(404).json({ erro: 'Servico nao encontrado' });
@@ -96,7 +98,16 @@ router.post('/agendamentos', async (req, res) => {
           (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, criado_em)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `,
-        [inscricaoId, agendamentoId, usuario_id, estabelecimento_id, valorFinal, 'BRL', metodoId, 'pendente'],
+        [
+          inscricaoId,
+          agendamentoId,
+          usuario_id,
+          estabelecimento_id,
+          valorFinal,
+          'BRL',
+          metodoId,
+          'pendente',
+        ],
       );
 
       if (inscricaoId) {
@@ -201,7 +212,7 @@ router.get('/agendamentos/minha-barbearia', async (req, res) => {
         i.usuario_id,
         i.estabelecimento_id,
         i.plano_id,
-        i."proxima_data_cobranÃ§a" AS proximo_pag,
+        i."proxima_data_cobrança" AS proximo_pag,
         i.status,
         u.nome AS usuario_nome,
         e.nome AS estabelecimento_nome
@@ -209,7 +220,7 @@ router.get('/agendamentos/minha-barbearia', async (req, res) => {
       LEFT JOIN usuario u ON u.id = i.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
       WHERE i.estabelecimento_id IN (${placeholders})
-      ORDER BY i."proxima_data_cobranÃ§a" DESC
+      ORDER BY i."proxima_data_cobrança" DESC
     `,
       ids,
     );

@@ -53,7 +53,7 @@ router.post('/inscricoes', async (req, res) => {
       const [, resultInscricao] = await connection.execute(
         `
         INSERT INTO inscricoes
-          (usuario_id, plano_id, estabelecimento_id, status, data_incio, "proxima_data_cobranÃ§a", "preÃ§o_periodo_atual", pagamento_metodo_id, criado_em)
+          (usuario_id, plano_id, estabelecimento_id, status, data_incio, "proxima_data_cobrança", "preço_periodo_atual", pagamento_metodo_id, criado_em)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `,
         [
@@ -121,8 +121,8 @@ router.get('/inscricoes/usuario/:id', async (req, res) => {
         i.id,
         i.status,
         i.data_incio,
-        i."proxima_data_cobranÃ§a" AS proxima_data_cobranca,
-        i."preÃ§o_periodo_atual" AS preco_periodo_atual,
+        i."proxima_data_cobrança" AS proxima_data_cobranca,
+        i."preço_periodo_atual" AS preco_periodo_atual,
         p.nome AS plano_nome,
         p.description AS plano_description,
         p.ciclo_pagamento,
@@ -131,7 +131,8 @@ router.get('/inscricoes/usuario/:id', async (req, res) => {
       FROM inscricoes i
       LEFT JOIN planos p ON p.id = i.plano_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
-      WHERE i.usuario_id = ? AND i.status IN ('ativo', 'free trial', 'atrasado')
+      WHERE i.usuario_id = ?
+        AND i.status IN ('ativo', 'free trial', 'atrasado')
       ORDER BY i.criado_em DESC
     `,
       [req.params.id],
