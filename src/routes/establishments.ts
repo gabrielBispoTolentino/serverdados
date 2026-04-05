@@ -6,36 +6,85 @@ import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
 
+function isMissingColumnError(error: unknown) {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === '42703'
+  );
+}
+
 router.get('/establishments', async (req, res) => {
   try {
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 5;
     const offset = (page - 1) * limit;
 
-    const [establishments] = await pool.query(`
-      SELECT
-        id,
-        dono_id,
-        nome AS name,
-        description,
-        rua,
-        cidade AS address,
-        stado,
-        pais,
-        cep,
-        phone,
-        rating_avg,
-        rating_count,
-        mei,
-        criado_em,
-        updated_em,
-        deletedo_em,
-        imagem_url
-      FROM establishments
-      WHERE deletedo_em IS NULL
-      ORDER BY rating_avg DESC, nome ASC
-      LIMIT ${limit} OFFSET ${offset}
-    `);
+    let establishments;
+
+    try {
+      [establishments] = await pool.query(`
+        SELECT
+          id,
+          dono_id,
+          nome AS name,
+          description,
+          rua,
+          cidade,
+          TRIM(CONCAT(COALESCE(rua, ''), CASE WHEN cidade IS NOT NULL AND cidade <> '' THEN ', ' || cidade ELSE '' END, CASE WHEN stado IS NOT NULL AND stado <> '' THEN ' - ' || stado ELSE '' END)) AS address,
+          stado,
+          pais,
+          cep,
+          phone,
+          rating_avg,
+          rating_count,
+          mei,
+          criado_em,
+          updated_em,
+          deletedo_em,
+          imagem_url,
+          latitude,
+          longitude,
+          google_maps_url,
+          google_maps_embed_url,
+          location_verified
+        FROM establishments
+        WHERE deletedo_em IS NULL
+        ORDER BY rating_avg DESC, nome ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        throw error;
+      }
+
+      [establishments] = await pool.query(`
+        SELECT
+          id,
+          dono_id,
+          nome AS name,
+          description,
+          rua,
+          cidade,
+          TRIM(CONCAT(COALESCE(rua, ''), CASE WHEN cidade IS NOT NULL AND cidade <> '' THEN ', ' || cidade ELSE '' END, CASE WHEN stado IS NOT NULL AND stado <> '' THEN ' - ' || stado ELSE '' END)) AS address,
+          stado,
+          pais,
+          cep,
+          phone,
+          rating_avg,
+          rating_count,
+          mei,
+          criado_em,
+          updated_em,
+          deletedo_em,
+          imagem_url
+        FROM establishments
+        WHERE deletedo_em IS NULL
+        ORDER BY rating_avg DESC, nome ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+    }
 
     res.json(establishments);
   } catch (error) {
@@ -46,30 +95,68 @@ router.get('/establishments', async (req, res) => {
 
 router.get('/establishments/:id', async (req, res) => {
   try {
-    const [establishments] = await pool.execute(
-      `
-      SELECT
-        id,
-        dono_id,
-        nome AS name,
-        description,
-        rua,
-        cidade,
-        stado,
-        pais,
-        cep,
-        phone,
-        rating_avg,
-        rating_count,
-        mei,
-        criado_em,
-        updated_em,
-        imagem_url
-      FROM establishments
-      WHERE id = ? AND deletedo_em IS NULL
-    `,
-      [req.params.id],
-    );
+    let establishments;
+
+    try {
+      [establishments] = await pool.execute(
+        `
+        SELECT
+          id,
+          dono_id,
+          nome AS name,
+          description,
+          rua,
+          cidade,
+          stado,
+          pais,
+          cep,
+          phone,
+          rating_avg,
+          rating_count,
+          mei,
+          criado_em,
+          updated_em,
+          imagem_url,
+          latitude,
+          longitude,
+          google_maps_url,
+          google_maps_embed_url,
+          location_verified
+        FROM establishments
+        WHERE id = ? AND deletedo_em IS NULL
+      `,
+        [req.params.id],
+      );
+    } catch (error) {
+      if (!isMissingColumnError(error)) {
+        throw error;
+      }
+
+      [establishments] = await pool.execute(
+        `
+        SELECT
+          id,
+          dono_id,
+          nome AS name,
+          description,
+          rua,
+          cidade,
+          stado,
+          pais,
+          cep,
+          phone,
+          rating_avg,
+          rating_count,
+          mei,
+          criado_em,
+          updated_em,
+          imagem_url
+        FROM establishments
+        WHERE id = ? AND deletedo_em IS NULL
+      `,
+        [req.params.id],
+      );
+    }
 
     if (establishments.length === 0) {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
@@ -85,6 +172,11 @@ router.get('/establishments/:id', async (req, res) => {
       description: est.description,
       phone: est.phone,
       ratingCount: est.rating_count || 0,
+      latitude: est.latitude ?? null,
+      longitude: est.longitude ?? null,
+      google_maps_url: est.google_maps_url ?? null,
+      google_maps_embed_url: est.google_maps_embed_url ?? null,
+      location_verified: est.location_verified ?? null,
       fullAddress: {
         rua: est.rua,
         cidade: est.cidade,
