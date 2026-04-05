@@ -1,36 +1,29 @@
-const fs = require('fs');
-const path = require('path');
-const {
-  SERVER_ROOT,
-  PROFILE_UPLOADS_DIR,
+import fs from 'fs';
+import path from 'path';
+import {
   ESTABLISHMENT_UPLOADS_DIR,
-} = require('../config/paths');
+  PROFILE_UPLOADS_DIR,
+  SERVER_ROOT,
+} from '../config/paths';
 
-function ensureDir(dir) {
+export function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
 
-function ensureUploadDirs() {
+export function ensureUploadDirs() {
   ensureDir(PROFILE_UPLOADS_DIR);
   ensureDir(ESTABLISHMENT_UPLOADS_DIR);
 }
 
-function resolveAppPath(relativePath) {
+export function resolveAppPath(relativePath: string | null | undefined) {
   const sanitized = String(relativePath || '').replace(/^[/\\]+/, '');
   return path.join(SERVER_ROOT, sanitized);
 }
 
-function safeUnlink(filePath) {
+export function safeUnlink(filePath: string | null | undefined) {
   if (filePath && fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
 }
-
-module.exports = {
-  ensureDir,
-  ensureUploadDirs,
-  resolveAppPath,
-  safeUnlink,
-};

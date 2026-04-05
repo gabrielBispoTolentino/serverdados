@@ -1,16 +1,11 @@
-const express = require('express');
-const { pool } = require('../config/database');
+import express from 'express';
+import { pool } from '../config/database';
 
 const router = express.Router();
 
 router.post('/avaliacoes', async (req, res) => {
   try {
-    const {
-      usuario_id,
-      estabelecimento_id,
-      rating,
-      comentario,
-    } = req.body;
+    const { usuario_id, estabelecimento_id, rating, comentario } = req.body;
 
     const [, result] = await pool.execute(
       'INSERT INTO avaliacoes (usuario_id, id_estabelecimento, score, comment) VALUES (?, ?, ?, ?)',
@@ -27,4 +22,4 @@ router.post('/avaliacoes', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

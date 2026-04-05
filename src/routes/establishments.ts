@@ -1,8 +1,8 @@
-const express = require('express');
-const { pool } = require('../config/database');
-const { uploadEstablishment } = require('../config/uploads');
-const { DEFAULT_ESTABLISHMENT_PHOTO } = require('../config/constants');
-const { resolveAppPath, safeUnlink } = require('../utils/files');
+import express from 'express';
+import { DEFAULT_ESTABLISHMENT_PHOTO } from '../config/constants';
+import { pool } from '../config/database';
+import { uploadEstablishment } from '../config/uploads';
+import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
 
@@ -46,7 +46,8 @@ router.get('/establishments', async (req, res) => {
 
 router.get('/establishments/:id', async (req, res) => {
   try {
-    const [establishments] = await pool.execute(`
+    const [establishments] = await pool.execute(
+      `
       SELECT
         id,
         dono_id,
@@ -66,7 +67,9 @@ router.get('/establishments/:id', async (req, res) => {
         imagem_url
       FROM establishments
       WHERE id = ? AND deletedo_em IS NULL
-    `, [req.params.id]);
+    `,
+      [req.params.id],
+    );
 
     if (establishments.length === 0) {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
@@ -98,22 +101,13 @@ router.get('/establishments/:id', async (req, res) => {
 
 router.post('/establishments', uploadEstablishment.single('foto'), async (req, res) => {
   try {
-    const {
-      dono_id,
-      nome,
-      description,
-      rua,
-      cidade,
-      stado,
-      pais,
-      cep,
-      phone,
-      mei,
-    } = req.body;
+    const { dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
 
     if (!dono_id || !nome || !rua || !cidade || !stado || !cep) {
       safeUnlink(req.file?.path);
-      return res.status(400).json({ erro: 'Campos obrigatorios: dono_id, nome, rua, cidade, stado, cep' });
+      return res
+        .status(400)
+        .json({ erro: 'Campos obrigatorios: dono_id, nome, rua, cidade, stado, cep' });
     }
 
     const imagemUrl = req.file
@@ -122,23 +116,26 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
 
     const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
 
-    const [, result] = await pool.execute(`
+    const [, result] = await pool.execute(
+      `
       INSERT INTO establishments
         (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
-    `, [
-      dono_id,
-      nome,
-      description || null,
-      rua,
-      cidade,
-      stado,
-      pais || 'Brasil',
-      cep,
-      phone || null,
-      Number.isNaN(meiTratado) ? 0 : meiTratado,
-      imagemUrl,
-    ]);
+    `,
+      [
+        dono_id,
+        nome,
+        description || null,
+        rua,
+        cidade,
+        stado,
+        pais || 'Brasil',
+        cep,
+        phone || null,
+        Number.isNaN(meiTratado) ? 0 : meiTratado,
+        imagemUrl,
+      ],
+    );
 
     res.status(201).json({
       mensagem: 'Estabelecimento criado com sucesso',
@@ -154,18 +151,8 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
 
 router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, res) => {
   try {
-    const { id } = req.params;
-    const {
-      nome,
-      description,
-      rua,
-      cidade,
-      stado,
-      pais,
-      cep,
-      phone,
-      mei,
-    } = req.body;
+    const id = String(req.params.id);
+    const { nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
 
     const [estabelecimentoAtual] = await pool.execute(
       'SELECT imagem_url FROM establishments WHERE id = ? AND deletedo_em IS NULL',
@@ -186,11 +173,14 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
       imagemUrl = `/uploads/establishment-photos/${req.file.filename}`;
     }
 
-    const [, result] = await pool.execute(`
+    const [, result] = await pool.execute(
+      `
       UPDATE establishments
       SET nome = ?, description = ?, rua = ?, cidade = ?, stado = ?, pais = ?, cep = ?, phone = ?, mei = ?, imagem_url = ?, updated_em = NOW()
       WHERE id = ? AND deletedo_em IS NULL
-    `, [nome, description, rua, cidade, stado, pais || 'Brasil', cep, phone, mei, imagemUrl, id]);
+    `,
+      [nome, description, rua, cidade, stado, pais || 'Brasil', cep, phone, mei, imagemUrl, id],
+    );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
@@ -209,7 +199,7 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
 
 router.delete('/establishments/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
     const [estabelecimento] = await pool.execute(
       'SELECT imagem_url FROM establishments WHERE id = ? AND deletedo_em IS NULL',
@@ -240,4 +230,4 @@ router.delete('/establishments/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

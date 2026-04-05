@@ -1,19 +1,42 @@
-const { Pool } = require('pg');
-const {
-  SUPABASE_PROJECT_REF,
-  SUPABASE_PROJECT_URL,
-} = require('./constants');
+import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
+import { SUPABASE_PROJECT_REF, SUPABASE_PROJECT_URL } from './constants';
 
-function replacePlaceholders(sql) {
+type SqlParam = string | number | boolean | Date | null | undefined;
+
+interface QueryMetadata {
+  affectedRows: number;
+  insertId: number | null;
+  rowCount: number;
+}
+
+type QueryResponse<T extends QueryResultRow = QueryResultRow> = [T[], QueryMetadata];
+
+interface QueryableClient {
+  query<T extends QueryResultRow = QueryResultRow>(sql: string, params?: SqlParam[]): Promise<QueryResult<T>>;
+}
+
+export interface DatabaseExecutor {
+  query<T extends QueryResultRow = QueryResultRow>(sql: string, params?: SqlParam[]): Promise<QueryResponse<T>>;
+  execute<T extends QueryResultRow = QueryResultRow>(sql: string, params?: SqlParam[]): Promise<QueryResponse<T>>;
+}
+
+export interface DatabaseConnection extends DatabaseExecutor {
+  beginTransaction(): Promise<void>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+  release(): void;
+}
+
+function replacePlaceholders(sql: string) {
   let index = 0;
   return sql.replace(/\?/g, () => `$${++index}`);
 }
 
-function needsReturning(sql) {
+function needsReturning(sql: string) {
   return /^\s*insert\s+into/i.test(sql) && !/\breturning\b/i.test(sql);
 }
 
-function normalizeSql(sql) {
+function normalizeSql(sql: string) {
   const withPlaceholders = replacePlaceholders(sql);
   if (needsReturning(withPlaceholders)) {
     return `${withPlaceholders.trimEnd()} RETURNING id`;
@@ -21,7 +44,7 @@ function normalizeSql(sql) {
   return withPlaceholders;
 }
 
-function buildMetadata(result) {
+function buildMetadata(result: QueryResult<QueryResultRow>): QueryMetadata {
   return {
     affectedRows: result.rowCount || 0,
     insertId: result.rows?.[0]?.id ?? null,
@@ -29,12 +52,16 @@ function buildMetadata(result) {
   };
 }
 
-async function runQuery(client, sql, params = []) {
-  const result = await client.query(normalizeSql(sql), params);
+async function runQuery<T extends QueryResultRow = QueryResultRow>(
+  client: QueryableClient,
+  sql: string,
+  params: SqlParam[] = [],
+): Promise<QueryResponse<T>> {
+  const result = await client.query<T>(normalizeSql(sql), params);
   return [result.rows, buildMetadata(result)];
 }
 
-function wrapClient(client) {
+function wrapClient(client: PoolClient): DatabaseConnection {
   return {
     query(sql, params = []) {
       return runQuery(client, sql, params);
@@ -83,7 +110,10 @@ rawPool.on('error', (error) => {
   console.error('Erro no pool PostgreSQL/Supabase:', error);
 });
 
-const pool = {
+export const pool: DatabaseExecutor & {
+  getConnection(): Promise<DatabaseConnection>;
+  end(): Promise<void>;
+} = {
   query(sql, params = []) {
     return runQuery(rawPool, sql, params);
   },
@@ -99,7 +129,7 @@ const pool = {
   },
 };
 
-function logDatabaseConfig() {
+export function logDatabaseConfig() {
   const host =
     process.env.PGHOST ||
     process.env.DB_HOST ||
@@ -111,8 +141,3 @@ function logDatabaseConfig() {
     );
   }
 }
-
-module.exports = {
-  pool,
-  logDatabaseConfig,
-};

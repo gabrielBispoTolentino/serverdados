@@ -1,30 +1,21 @@
-const express = require('express');
-const { pool } = require('../config/database');
-const { uploadProfile } = require('../config/uploads');
-const { DEFAULT_PROFILE_PHOTO } = require('../config/constants');
-const { resolveAppPath, safeUnlink } = require('../utils/files');
+import express from 'express';
+import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
+import { pool } from '../config/database';
+import { uploadProfile } from '../config/uploads';
+import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
 
 router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
   try {
-    const {
-      nome,
-      email,
-      senha,
-      cpf,
-      telefone,
-      role,
-    } = req.body;
+    const { nome, email, senha, cpf, telefone, role } = req.body;
 
     if (!nome || !email || !senha || !cpf || !telefone || !role) {
       safeUnlink(req.file?.path);
       return res.status(400).json({ erro: 'Todos os campos sao obrigatorios' });
     }
 
-    const fotoUrl = req.file
-      ? `/uploads/profile-photos/${req.file.filename}`
-      : DEFAULT_PROFILE_PHOTO;
+    const fotoUrl = req.file ? `/uploads/profile-photos/${req.file.filename}` : DEFAULT_PROFILE_PHOTO;
 
     const [, result] = await pool.execute(
       'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -43,7 +34,7 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
   }
 });
 
-router.get('/usuarios', async (req, res) => {
+router.get('/usuarios', async (_req, res) => {
   try {
     const [usuarios] = await pool.execute(
       'SELECT id, nome, email, imagem_url AS foto_url FROM usuario',
@@ -109,13 +100,10 @@ router.get('/usuarios/:id', async (req, res) => {
 
 router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const { nome, email, senha } = req.body;
 
-    const [usuarioAtual] = await pool.execute(
-      'SELECT imagem_url FROM usuario WHERE id = ?',
-      [id],
-    );
+    const [usuarioAtual] = await pool.execute('SELECT imagem_url FROM usuario WHERE id = ?', [id]);
 
     if (usuarioAtual.length === 0) {
       safeUnlink(req.file?.path);
@@ -153,17 +141,11 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
 
 router.delete('/usuarios/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
-    const [usuario] = await pool.execute(
-      'SELECT imagem_url FROM usuario WHERE id = ?',
-      [id],
-    );
+    const [usuario] = await pool.execute('SELECT imagem_url FROM usuario WHERE id = ?', [id]);
 
-    const [, result] = await pool.execute(
-      'DELETE FROM usuario WHERE id = ?',
-      [id],
-    );
+    const [, result] = await pool.execute('DELETE FROM usuario WHERE id = ?', [id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
@@ -180,4 +162,4 @@ router.delete('/usuarios/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

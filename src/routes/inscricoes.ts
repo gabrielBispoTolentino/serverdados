@@ -1,5 +1,5 @@
-const express = require('express');
-const { pool } = require('../config/database');
+import express from 'express';
+import { pool } from '../config/database';
 
 const router = express.Router();
 
@@ -50,41 +50,48 @@ router.post('/inscricoes', async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      const [, resultInscricao] = await connection.execute(`
+      const [, resultInscricao] = await connection.execute(
+        `
         INSERT INTO inscricoes
-          (usuario_id, plano_id, estabelecimento_id, status, data_incio, "proxima_data_cobrança", "preço_periodo_atual", pagamento_metodo_id, criado_em)
+          (usuario_id, plano_id, estabelecimento_id, status, data_incio, "proxima_data_cobranÃ§a", "preÃ§o_periodo_atual", pagamento_metodo_id, criado_em)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-      `, [
-        usuario_id,
-        plano_id,
-        plano.estabelecimento_id,
-        status,
-        dataInicio,
-        proximaCobranca,
-        plano.preco,
-        metodoId,
-      ]);
+      `,
+        [
+          usuario_id,
+          plano_id,
+          plano.estabelecimento_id,
+          status,
+          dataInicio,
+          proximaCobranca,
+          plano.preco,
+          metodoId,
+        ],
+      );
 
       const inscricaoId = resultInscricao.insertId;
 
-      const dataLimite = plano.dias_freetrial > 0
-        ? proximaCobranca.toISOString().split('T')[0]
-        : new Date(hoje.getTime() + (7 * 24 * 60 * 60 * 1000)).toISOString().split('T')[0];
+      const dataLimite =
+        plano.dias_freetrial > 0
+          ? proximaCobranca.toISOString().split('T')[0]
+          : new Date(hoje.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-      await connection.execute(`
+      await connection.execute(
+        `
         INSERT INTO pagamento
           (inscricao_id, agendamento_id, usuario_id, estabelecimento_id, quantidade, cambio, metodo_id, status, data_limite, criado_em)
         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NOW())
-      `, [
-        inscricaoId,
-        usuario_id,
-        plano.estabelecimento_id,
-        plano.preco,
-        'BRL',
-        metodoId,
-        'pendente',
-        dataLimite,
-      ]);
+      `,
+        [
+          inscricaoId,
+          usuario_id,
+          plano.estabelecimento_id,
+          plano.preco,
+          'BRL',
+          metodoId,
+          'pendente',
+          dataLimite,
+        ],
+      );
 
       await connection.commit();
       connection.release();
@@ -108,13 +115,14 @@ router.post('/inscricoes', async (req, res) => {
 
 router.get('/inscricoes/usuario/:id', async (req, res) => {
   try {
-    const [inscricoes] = await pool.execute(`
+    const [inscricoes] = await pool.execute(
+      `
       SELECT
         i.id,
         i.status,
         i.data_incio,
-        i."proxima_data_cobrança" AS proxima_data_cobranca,
-        i."preço_periodo_atual" AS preco_periodo_atual,
+        i."proxima_data_cobranÃ§a" AS proxima_data_cobranca,
+        i."preÃ§o_periodo_atual" AS preco_periodo_atual,
         p.nome AS plano_nome,
         p.description AS plano_description,
         p.ciclo_pagamento,
@@ -125,7 +133,9 @@ router.get('/inscricoes/usuario/:id', async (req, res) => {
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
       WHERE i.usuario_id = ? AND i.status IN ('ativo', 'free trial', 'atrasado')
       ORDER BY i.criado_em DESC
-    `, [req.params.id]);
+    `,
+      [req.params.id],
+    );
 
     res.json(inscricoes);
   } catch (error) {
@@ -136,11 +146,14 @@ router.get('/inscricoes/usuario/:id', async (req, res) => {
 
 router.patch('/inscricoes/:id/cancelar', async (req, res) => {
   try {
-    const [, result] = await pool.execute(`
+    const [, result] = await pool.execute(
+      `
       UPDATE inscricoes
       SET status = 'cancelado', cancelado_por_user = 1, motivo_cancelamento = ?, updated_em = NOW()
       WHERE id = ?
-    `, [req.body.motivo || null, req.params.id]);
+    `,
+      [req.body.motivo || null, req.params.id],
+    );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Inscricao nao encontrada' });
@@ -153,4 +166,4 @@ router.patch('/inscricoes/:id/cancelar', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

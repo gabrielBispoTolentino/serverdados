@@ -1,4 +1,6 @@
-function getBeneficioDescricao(beneficio) {
+import type { DatabaseExecutor } from '../config/database';
+
+function getBeneficioDescricao(beneficio: any) {
   let descricao = '';
 
   switch (beneficio.condicao_tipo) {
@@ -30,9 +32,15 @@ function getBeneficioDescricao(beneficio) {
   return descricao;
 }
 
-async function calcularBeneficios(pool, inscricaoId, servicoId, valorOriginal) {
+export async function calcularBeneficios(
+  pool: DatabaseExecutor,
+  inscricaoId: number | string,
+  servicoId: number | string,
+  valorOriginal: number,
+) {
   try {
-    const [beneficios] = await pool.execute(`
+    const [beneficios] = await pool.execute(
+      `
       SELECT
         pb.*,
         p.nome AS plano_nome
@@ -43,7 +51,9 @@ async function calcularBeneficios(pool, inscricaoId, servicoId, valorOriginal) {
         AND pb.ativo = 1
         AND (pb.servico_id IS NULL OR pb.servico_id = ?)
       ORDER BY pb.ordem ASC
-    `, [inscricaoId, servicoId]);
+    `,
+      [inscricaoId, servicoId],
+    );
 
     if (beneficios.length === 0) {
       return {
@@ -66,23 +76,29 @@ async function calcularBeneficios(pool, inscricaoId, servicoId, valorOriginal) {
           aplicar = true;
           break;
         case 'primeira_vez': {
-          const [usos] = await pool.execute(`
+          const [usos] = await pool.execute(
+            `
             SELECT COUNT(*)::int AS total
             FROM uso_servicos
             WHERE inscricao_id = ?
-          `, [inscricaoId]);
+          `,
+            [inscricaoId],
+          );
           aplicar = usos[0].total === 0;
           break;
         }
         case 'apos_x_usos': {
-          const [usosServico] = await pool.execute(`
+          const [usosServico] = await pool.execute(
+            `
             SELECT COUNT(*)::int AS total
             FROM uso_servicos
             WHERE inscricao_id = ?
               AND servico_id = ?
               AND EXTRACT(MONTH FROM data_uso) = EXTRACT(MONTH FROM CURRENT_TIMESTAMP)
               AND EXTRACT(YEAR FROM data_uso) = EXTRACT(YEAR FROM CURRENT_TIMESTAMP)
-          `, [inscricaoId, servicoId]);
+          `,
+            [inscricaoId, servicoId],
+          );
           aplicar = (usosServico[0].total + 1) % beneficio.condicao_valor === 0;
           break;
         }
@@ -133,7 +149,4 @@ async function calcularBeneficios(pool, inscricaoId, servicoId, valorOriginal) {
   }
 }
 
-module.exports = {
-  calcularBeneficios,
-  getBeneficioDescricao,
-};
+export { getBeneficioDescricao };
