@@ -246,6 +246,8 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
     const id = String(req.params.id);
     const { nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
 
+    const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
+
     const [estabelecimentoAtual] = await pool.execute(
       'SELECT imagem_url FROM establishments WHERE id = ? AND deletedo_em IS NULL',
       [id],
@@ -271,7 +273,7 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
       SET nome = ?, description = ?, rua = ?, cidade = ?, stado = ?, pais = ?, cep = ?, phone = ?, mei = ?, imagem_url = ?, updated_em = NOW()
       WHERE id = ? AND deletedo_em IS NULL
     `,
-      [nome, description, rua, cidade, stado, pais || 'Brasil', cep, phone, mei, imagemUrl, id],
+      [nome, description, rua, cidade, stado, pais || 'Brasil', cep, phone, Number.isNaN(meiTratado) ? 0 : meiTratado, imagemUrl, id],
     );
 
     if (result.affectedRows === 0) {
@@ -319,6 +321,38 @@ router.delete('/establishments/:id', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao deletar estabelecimento' });
+  }
+});
+router.post('/establishments/:id/post-location', async (req, res) => {
+  const id = String(req.params.id);
+  const { latitude, longitude, google_maps_url, google_maps_embed_url } = req.body;
+
+  if (!google_maps_url) {
+    return res.status(400).json({ erro: 'google_maps_url e obrigatorio' });
+  }
+
+  try {
+    const [, result] = await pool.execute(
+      `UPDATE establishments
+       SET latitude = ?, longitude = ?, google_maps_url = ?, google_maps_embed_url = ?
+       WHERE id = ?`,
+      [
+        latitude || null,
+        longitude || null,
+        google_maps_url,
+        google_maps_embed_url || null,
+        id,
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
+    }
+
+    res.json({ mensagem: 'Localizacao atualizada com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao atualizar localizacao' });
   }
 });
 
