@@ -47,7 +47,6 @@ router.get('/establishments', async (req, res) => {
           latitude,
           longitude,
           google_maps_url,
-          google_maps_embed_url,
           location_verified
         FROM establishments
         WHERE deletedo_em IS NULL
@@ -120,7 +119,6 @@ router.get('/establishments/:id', async (req, res) => {
           latitude,
           longitude,
           google_maps_url,
-          google_maps_embed_url,
           location_verified
         FROM establishments
         WHERE id = ? AND deletedo_em IS NULL
@@ -323,26 +321,126 @@ router.delete('/establishments/:id', async (req, res) => {
     res.status(500).json({ erro: 'Erro ao deletar estabelecimento' });
   }
 });
-router.post('/establishments/:id/post-location', async (req, res) => {
-  const id = String(req.params.id);
-  const { latitude, longitude, google_maps_url, google_maps_embed_url } = req.body;
+function hasOwn(value: unknown, key: string) {
+  return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, key);
+}
 
-  if (!google_maps_url) {
-    return res.status(400).json({ erro: 'google_maps_url e obrigatorio' });
+function normalizeLocationValue(value: unknown) {
+  if (value === '' || value === null || value === undefined) {
+    return null;
+  }
+  return value;
+}
+
+function buildGoogleMapsEmbedUrl(query: string) {
+  return `https://www.google.com/maps?q=${encodeURIComponent(query)}&z=15&output=embed`;
+}
+
+function extractEmbedUrlFromGoogleMapsUrl(value: string | null | undefined) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const directValue = value.trim();
+  if (!directValue) {
+    return null;
+  }
+
+  if (directValue.includes('output=embed')) {
+    return directValue;
   }
 
   try {
+    const url = new URL(directValue);
+    const queryParams = ['q', 'query', 'destination', 'll', 'center'];
+
+    for (const key of queryParams) {
+      const paramValue = url.searchParams.get(key)?.trim();
+      if (paramValue) {
+        return buildGoogleMapsEmbedUrl(paramValue);
+      }
+    }
+
+    const placeMatch = url.pathname.match(/\/place\/([^/]+)/i);
+    if (placeMatch?.[1]) {
+      return buildGoogleMapsEmbedUrl(decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '));
+    }
+
+    const atMatch = directValue.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+    if (atMatch) {
+      return buildGoogleMapsEmbedUrl(`${atMatch[1]},${atMatch[2]}`);
+    }
+
+    const dataMatch = directValue.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+    if (dataMatch) {
+      return buildGoogleMapsEmbedUrl(`${dataMatch[1]},${dataMatch[2]}`);
+    }
+  } catch {
+    const atMatch = directValue.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+    if (atMatch) {
+      return buildGoogleMapsEmbedUrl(`${atMatch[1]},${atMatch[2]}`);
+    }
+  }
+
+  return null;
+}
+
+async function updateEstablishmentLocation(req: express.Request, res: express.Response) {
+  const id = String(req.params.id);
+  const latitudeProvided = hasOwn(req.body, 'latitude');
+  const longitudeProvided = hasOwn(req.body, 'longitude');
+  const mapsUrlProvided = hasOwn(req.body, 'google_maps_url');
+
+  if (!latitudeProvided && !longitudeProvided && !mapsUrlProvided) {
+    return res.status(400).json({ erro: 'Nenhum campo de localizacao foi informado' });
+  }
+
+  try {
+    const [estabelecimentos] = await pool.execute(
+      `
+      SELECT latitude, longitude, google_maps_url, location_verified
+      FROM establishments
+      WHERE id = ? AND deletedo_em IS NULL
+    `,
+      [id],
+    );
+
+    if (estabelecimentos.length === 0) {
+      return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
+    }
+
+    const estabelecimentoAtual = estabelecimentos[0];
+    const nextLatitude = latitudeProvided
+      ? normalizeLocationValue(req.body.latitude)
+      : estabelecimentoAtual.latitude;
+    const nextLongitude = longitudeProvided
+      ? normalizeLocationValue(req.body.longitude)
+      : estabelecimentoAtual.longitude;
+    const nextGoogleMapsUrl = mapsUrlProvided
+      ? normalizeLocationValue(
+          typeof req.body.google_maps_url === 'string'
+            ? req.body.google_maps_url.trim()
+            : req.body.google_maps_url,
+        )
+      : estabelecimentoAtual.google_maps_url;
+    const shouldResetVerification =
+      nextLatitude !== estabelecimentoAtual.latitude ||
+      nextLongitude !== estabelecimentoAtual.longitude ||
+      nextGoogleMapsUrl !== estabelecimentoAtual.google_maps_url;
+
     const [, result] = await pool.execute(
-      `UPDATE establishments
-       SET latitude = ?, longitude = ?, google_maps_url = ?, google_maps_embed_url = ?
-       WHERE id = ?`,
+      `
+      UPDATE establishments
+      SET latitude = ?, longitude = ?, google_maps_url = ?, location_verified = ?, updated_em = NOW()
+      WHERE id = ? AND deletedo_em IS NULL
+    `,
       [
-        latitude || null,
-        longitude || null,
-        google_maps_url,
-        google_maps_embed_url || null,
+        nextLatitude,
+        nextLongitude,
+        nextGoogleMapsUrl,
+        shouldResetVerification ? false : estabelecimentoAtual.location_verified,
         id,
-      ]
+      ],
     );
 
     if (result.affectedRows === 0) {
@@ -353,6 +451,47 @@ router.post('/establishments/:id/post-location', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao atualizar localizacao' });
+  }
+}
+
+router.put('/establishments/:id/location', updateEstablishmentLocation);
+router.post('/establishments/:id/location', updateEstablishmentLocation);
+router.post('/establishments/:id/post-location', updateEstablishmentLocation);
+
+router.get('/maps/embed-url', async (req, res) => {
+  const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+  if (!rawUrl) {
+    return res.status(400).json({ erro: 'url e obrigatoria' });
+  }
+
+  const directEmbedUrl = extractEmbedUrlFromGoogleMapsUrl(rawUrl);
+  if (directEmbedUrl) {
+    return res.json({ embedUrl: directEmbedUrl, resolvedUrl: rawUrl });
+  }
+
+  const timeout = AbortSignal.timeout(8000);
+
+  try {
+    const response = await fetch(rawUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: timeout,
+      headers: {
+        'user-agent': 'Mozilla/5.0 (compatible; BarberShopMapsResolver/1.0)',
+      },
+    });
+
+    const resolvedUrl = response.url || rawUrl;
+    const embedUrl = extractEmbedUrlFromGoogleMapsUrl(resolvedUrl);
+
+    if (!embedUrl) {
+      return res.status(422).json({ erro: 'Nao foi possivel converter o link para embed', resolvedUrl });
+    }
+
+    res.json({ embedUrl, resolvedUrl });
+  } catch (error) {
+    console.error(error);
+    res.status(502).json({ erro: 'Erro ao resolver link do Google Maps' });
   }
 });
 
