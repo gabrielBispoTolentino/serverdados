@@ -1,0 +1,208 @@
+import type { DatabaseExecutor } from '../config/database';
+
+export const CLIENT_ROLE = 'Cliente';
+export const ESTABLISHMENT_ADMIN_ROLE = 'ADM_Estabelecimento';
+export const PLATFORM_ADMIN_ROLE = 'ADM_Plataforma';
+
+export type UserRole =
+  | typeof CLIENT_ROLE
+  | typeof ESTABLISHMENT_ADMIN_ROLE
+  | typeof PLATFORM_ADMIN_ROLE;
+
+export type UserSubtypeTable = 'usuarioCliente' | 'usuarioADM';
+
+export interface UnifiedUser {
+  id: number;
+  email: string;
+  senha: string;
+  nome: string;
+  cpf: string;
+  telefone: string;
+  role: string;
+  imagem_url: string | null;
+  cnpj?: string | null;
+  user_table?: UserSubtypeTable | null;
+}
+
+const BASE_USER_SELECT = `
+  SELECT
+    u.id,
+    u.email,
+    u.senha,
+    u.nome,
+    u.cpf,
+    u.telefone,
+    u.role,
+    u.imagem_url,
+    ua.cnpj,
+    CASE
+      WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
+      WHEN ua.usuario_id IS NOT NULL THEN 'usuarioADM'
+      ELSE NULL
+    END::text AS user_table
+  FROM usuario u
+  LEFT JOIN usuarioCliente uc ON uc.usuario_id = u.id
+  LEFT JOIN usuarioADM ua ON ua.usuario_id = u.id
+`;
+
+export function parseUserRole(value: unknown): UserRole | null {
+  if (value === CLIENT_ROLE || value === ESTABLISHMENT_ADMIN_ROLE || value === PLATFORM_ADMIN_ROLE) {
+    return value;
+  }
+
+  return null;
+}
+
+export function getUserSubtypeTable(role: UserRole): UserSubtypeTable | null {
+  if (role === CLIENT_ROLE) {
+    return 'usuarioCliente';
+  }
+
+  if (role === ESTABLISHMENT_ADMIN_ROLE) {
+    return 'usuarioADM';
+  }
+
+  return null;
+}
+
+export function formatUser(user: Partial<UnifiedUser> & { role?: string | null; user_table?: string | null }) {
+  return {
+    id: user.id,
+    nome: user.nome,
+    email: user.email,
+    cpf: user.cpf,
+    telefone: user.telefone,
+    role: user.role,
+    fotoUrl: user.imagem_url || null,
+    imagem_url: user.imagem_url || null,
+    cnpj: user.cnpj ?? null,
+    userTable: user.user_table ?? null,
+  };
+}
+
+export async function queryUsers(
+  pool: DatabaseExecutor,
+  whereClause = '',
+  params: Array<string | number | boolean | Date | null | undefined> = [],
+) {
+  const [rows] = await pool.execute<UnifiedUser>(
+    `
+    ${BASE_USER_SELECT}
+    ${whereClause}
+  `,
+    params,
+  );
+
+  return rows;
+}
+
+export async function resolveUserById(pool: DatabaseExecutor, id: string | number) {
+  const [rows] = await pool.execute<UnifiedUser>(
+    `
+    ${BASE_USER_SELECT}
+    WHERE u.id = ?
+    `,
+    [id],
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function findUsersByLogin(
+  pool: DatabaseExecutor,
+  login: string,
+  senha: string,
+) {
+  return queryUsers(
+    pool,
+    'WHERE (u.email = ? OR u.cpf = ?) AND u.senha = ? LIMIT 1',
+    [login, login, senha],
+  );
+}
+
+export async function findUsersByEmailOrCpf(
+  pool: DatabaseExecutor,
+  {
+    email,
+    cpf,
+    excludeId,
+  }: {
+    email?: string | null;
+    cpf?: string | null;
+    excludeId?: string | number | null;
+  },
+) {
+  const conditions: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (email) {
+    conditions.push('u.email = ?');
+    params.push(email);
+  }
+
+  if (cpf) {
+    conditions.push('u.cpf = ?');
+    params.push(cpf);
+  }
+
+  if (conditions.length === 0) {
+    return [];
+  }
+
+  let whereClause = `WHERE (${conditions.join(' OR ')})`;
+
+  if (excludeId !== undefined && excludeId !== null) {
+    whereClause += ' AND u.id <> ?';
+    params.push(excludeId);
+  }
+
+  return queryUsers(pool, whereClause, params);
+}
+
+export async function findClientById(pool: DatabaseExecutor, id: string | number) {
+  const [rows] = await pool.execute<UnifiedUser>(
+    `
+    SELECT
+      u.id,
+      u.email,
+      u.senha,
+      u.nome,
+      u.cpf,
+      u.telefone,
+      u.role,
+      u.imagem_url,
+      NULL::text AS cnpj,
+      'usuarioCliente'::text AS user_table
+    FROM usuario u
+    INNER JOIN usuarioCliente uc ON uc.usuario_id = u.id
+    WHERE u.id = ?
+    `,
+    [id],
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function findAdminById(pool: DatabaseExecutor, id: string | number) {
+  const [rows] = await pool.execute<UnifiedUser>(
+    `
+    SELECT
+      u.id,
+      u.email,
+      u.senha,
+      u.nome,
+      u.cpf,
+      u.telefone,
+      u.role,
+      u.imagem_url,
+      ua.cnpj,
+      'usuarioADM'::text AS user_table
+    FROM usuario u
+    INNER JOIN usuarioADM ua ON ua.usuario_id = u.id
+    WHERE u.id = ?
+    `,
+    [id],
+  );
+
+  return rows[0] ?? null;
+}
