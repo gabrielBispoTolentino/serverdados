@@ -15,11 +15,12 @@ const { logStorageConfig } = require('./services/storage');
 const { ensureUploadDirs } = require('./utils/files');
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
 
 ensureUploadDirs();
 logDatabaseConfig();
 logStorageConfig();
 
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Servidor rodando em http://${HOST}:${PORT}`);
 });
