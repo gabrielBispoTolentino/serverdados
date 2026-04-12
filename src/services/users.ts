@@ -3,13 +3,14 @@ import type { DatabaseExecutor } from '../config/database';
 export const CLIENT_ROLE = 'Cliente';
 export const ESTABLISHMENT_ADMIN_ROLE = 'ADM_Estabelecimento';
 export const PLATFORM_ADMIN_ROLE = 'ADM_Plataforma';
+export const BARBER_SUBTYPE_TABLE = 'usuarioBarber';
 
 export type UserRole =
   | typeof CLIENT_ROLE
   | typeof ESTABLISHMENT_ADMIN_ROLE
   | typeof PLATFORM_ADMIN_ROLE;
 
-export type UserSubtypeTable = 'usuarioCliente' | 'usuarioADM';
+export type UserSubtypeTable = 'usuarioCliente' | 'usuarioADM' | typeof BARBER_SUBTYPE_TABLE;
 
 export interface UnifiedUser {
   id: number;
@@ -21,6 +22,7 @@ export interface UnifiedUser {
   role: string;
   imagem_url: string | null;
   cnpj?: string | null;
+  idbarberworker?: number | null;
   user_table?: UserSubtypeTable | null;
 }
 
@@ -35,7 +37,9 @@ const BASE_USER_SELECT = `
     u.role,
     u.imagem_url,
     ua.cnpj,
+    ub.idbarberworker,
     CASE
+      WHEN ub.usuario_id IS NOT NULL THEN 'usuarioBarber'
       WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
       WHEN ua.usuario_id IS NOT NULL THEN 'usuarioADM'
       ELSE NULL
@@ -43,6 +47,7 @@ const BASE_USER_SELECT = `
   FROM usuario u
   LEFT JOIN usuarioCliente uc ON uc.usuario_id = u.id
   LEFT JOIN usuarioADM ua ON ua.usuario_id = u.id
+  LEFT JOIN usuarioBarber ub ON ub.usuario_id = u.id
 `;
 
 export function parseUserRole(value: unknown): UserRole | null {
@@ -76,6 +81,7 @@ export function formatUser(user: Partial<UnifiedUser> & { role?: string | null; 
     fotoUrl: user.imagem_url || null,
     imagem_url: user.imagem_url || null,
     cnpj: user.cnpj ?? null,
+    idbarberworker: user.idbarberworker ?? null,
     userTable: user.user_table ?? null,
   };
 }
