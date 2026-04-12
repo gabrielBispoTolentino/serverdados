@@ -42,9 +42,9 @@ router.post('/report-lucro/auto', async (req, res) => {
     await pool.execute(
       `
       INSERT INTO report_lucro
-        (estabelecimento_id, "periodo_comeÃ§o", periodo_final, lucro_total, reembolso_total)
+        (estabelecimento_id, "periodo_começo", periodo_final, lucro_total, reembolso_total)
       VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (estabelecimento_id, "periodo_comeÃ§o", periodo_final)
+      ON CONFLICT (estabelecimento_id, "periodo_começo", periodo_final)
       DO UPDATE SET
         lucro_total = EXCLUDED.lucro_total,
         reembolso_total = EXCLUDED.reembolso_total,
@@ -82,14 +82,14 @@ router.get('/report-lucro', async (req, res) => {
       SELECT
         id,
         estabelecimento_id,
-        "periodo_comeÃ§o" AS periodo_comeco,
+        "periodo_começo" AS periodo_comeco,
         periodo_final,
         lucro_total,
         reembolso_total,
         generado_em
       FROM report_lucro
       WHERE estabelecimento_id = ?
-      ORDER BY "periodo_comeÃ§o" DESC
+      ORDER BY "periodo_começo" DESC
     `,
       [estabelecimento_id as string],
     );

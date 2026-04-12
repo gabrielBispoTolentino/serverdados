@@ -7,9 +7,9 @@ import {
   findUsersByEmailOrCpf,
   findUsersByLogin,
   formatUser,
-  getUserTable,
+  getUserSubtypeTable,
   parseUserRole,
-  queryUnifiedUsers,
+  queryUsers,
   resolveUserById,
 } from '../services/users';
 import { resolveAppPath, safeUnlink } from '../utils/files';
@@ -31,6 +31,13 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
       return res.status(400).json({ erro: 'CNPJ e obrigatorio para administradores de estabelecimento' });
     }
 
+    const subtypeTable = getUserSubtypeTable(parsedRole);
+
+    if (!subtypeTable) {
+      safeUnlink(req.file?.path);
+      return res.status(400).json({ erro: 'Tipo de usuario ainda nao suportado nesta operacao' });
+    }
+
     const conflitos = await findUsersByEmailOrCpf(pool, { email, cpf });
 
     if (conflitos.length > 0) {
@@ -39,30 +46,44 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     }
 
     const fotoUrl = req.file ? `/uploads/profile-photos/${req.file.filename}` : DEFAULT_PROFILE_PHOTO;
-    const tabela = getUserTable(parsedRole);
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const insertSql =
-      tabela === 'usuarioADM'
-        ? 'INSERT INTO usuarioADM (email, senha, nome, cpf, telefone, role, imagem_url, cnpj) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        : 'INSERT INTO usuarioCliente (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)';
+    try {
+      const [, result] = await connection.execute(
+        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [email, senha, nome, cpf, telefone, parsedRole, fotoUrl],
+      );
 
-    const insertParams =
-      tabela === 'usuarioADM'
-        ? [email, senha, nome, cpf, telefone, parsedRole, fotoUrl, cnpj]
-        : [email, senha, nome, cpf, telefone, parsedRole, fotoUrl];
+      const userId = result.insertId;
 
-    const [, result] = await pool.execute(
-      insertSql,
-      insertParams,
-    );
+      if (subtypeTable === 'usuarioADM') {
+        await connection.execute(
+          'INSERT INTO usuarioADM (usuario_id, role, cnpj) VALUES (?, ?, ?)',
+          [userId, parsedRole, cnpj],
+        );
+      } else {
+        await connection.execute(
+          'INSERT INTO usuarioCliente (usuario_id, role) VALUES (?, ?)',
+          [userId, parsedRole],
+        );
+      }
 
-    res.status(201).json({
-      mensagem: 'Usuario criado com sucesso',
-      id: result.insertId,
-      fotoUrl,
-      role: parsedRole,
-      userTable: tabela,
-    });
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        mensagem: 'Usuario criado com sucesso',
+        id: userId,
+        fotoUrl,
+        role: parsedRole,
+        userTable: subtypeTable,
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
   } catch (error) {
     console.error(error);
     safeUnlink(req.file?.path);
@@ -79,9 +100,9 @@ router.get('/usuarios', async (_req, res) => {
       return res.status(400).json({ erro: 'Role informado e invalido' });
     }
 
-    const usuarios = await queryUnifiedUsers(
+    const usuarios = await queryUsers(
       pool,
-      parsedRole ? 'WHERE role = ? ORDER BY nome ASC' : 'ORDER BY nome ASC',
+      parsedRole ? 'WHERE u.role = ? ORDER BY u.nome ASC' : 'ORDER BY u.nome ASC',
       parsedRole ? [parsedRole] : [],
     );
 
@@ -111,10 +132,6 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ erro: 'Credenciais invalidas' });
     }
 
-    if (usuarios.length > 1) {
-      return res.status(409).json({ erro: 'Ha mais de uma conta com estas credenciais. Informe o tipo de conta.' });
-    }
-
     const usuarioLogado = usuarios[0];
     res.json({
       mensagem: 'Login realizado com sucesso',
@@ -131,15 +148,7 @@ router.post('/login', async (req, res) => {
 
 router.get('/usuarios/:id', async (req, res) => {
   try {
-    const { user, ambiguous, invalidRole } = await resolveUserById(pool, req.params.id, req.query.role);
-
-    if (invalidRole) {
-      return res.status(400).json({ erro: 'Role informado e invalido' });
-    }
-
-    if (ambiguous) {
-      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
-    }
+    const user = await resolveUserById(pool, req.params.id);
 
     if (!user) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
@@ -159,19 +168,7 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
   try {
     const id = String(req.params.id);
     const { nome, email, senha, cpf, telefone, cnpj } = req.body;
-    const roleHint = req.body.role ?? req.query.role;
-
-    const { user: usuarioAtual, ambiguous, invalidRole } = await resolveUserById(pool, id, roleHint);
-
-    if (invalidRole) {
-      safeUnlink(req.file?.path);
-      return res.status(400).json({ erro: 'Role informado e invalido' });
-    }
-
-    if (ambiguous) {
-      safeUnlink(req.file?.path);
-      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
-    }
+    const usuarioAtual = await resolveUserById(pool, id);
 
     if (!usuarioAtual) {
       safeUnlink(req.file?.path);
@@ -192,10 +189,7 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     const conflitos = await findUsersByEmailOrCpf(pool, {
       email: proximoEmail,
       cpf: proximoCpf,
-      exclude: {
-        id,
-        sourceTable: usuarioAtual.source_table,
-      },
+      excludeId: id,
     });
 
     if (conflitos.length > 0) {
@@ -203,43 +197,41 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
       return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
     }
 
-    const tabela = usuarioAtual.source_table;
     const nomeAtualizado = nome ?? usuarioAtual.nome;
     const senhaAtualizada = senha ?? usuarioAtual.senha;
     const telefoneAtualizado = telefone ?? usuarioAtual.telefone;
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    const updateSql =
-      tabela === 'usuarioADM'
-        ? 'UPDATE usuarioADM SET nome = ?, email = ?, senha = ?, cpf = ?, telefone = ?, imagem_url = ?, cnpj = ? WHERE id = ?'
-        : 'UPDATE usuarioCliente SET nome = ?, email = ?, senha = ?, cpf = ?, telefone = ?, imagem_url = ? WHERE id = ?';
+    try {
+      const [, result] = await connection.execute(
+        'UPDATE usuario SET nome = ?, email = ?, senha = ?, cpf = ?, telefone = ?, imagem_url = ?, updated_em = NOW() WHERE id = ?',
+        [nomeAtualizado, proximoEmail, senhaAtualizada, proximoCpf, telefoneAtualizado, fotoUrl, id],
+      );
 
-    const updateParams =
-      tabela === 'usuarioADM'
-        ? [
-            nomeAtualizado,
-            proximoEmail,
-            senhaAtualizada,
-            proximoCpf,
-            telefoneAtualizado,
-            fotoUrl,
-            cnpj ?? usuarioAtual.cnpj ?? null,
-            id,
-          ]
-        : [nomeAtualizado, proximoEmail, senhaAtualizada, proximoCpf, telefoneAtualizado, fotoUrl, id];
+      if (usuarioAtual.user_table === 'usuarioADM' && (cnpj !== undefined || usuarioAtual.cnpj !== undefined)) {
+        await connection.execute(
+          'UPDATE usuarioADM SET cnpj = ? WHERE usuario_id = ?',
+          [cnpj ?? usuarioAtual.cnpj ?? null, id],
+        );
+      }
 
-    const [, result] = await pool.execute(
-      updateSql,
-      updateParams,
-    );
+      await connection.commit();
+      connection.release();
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ erro: 'Usuario nao encontrado' });
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ erro: 'Usuario nao encontrado' });
+      }
+
+      res.json({
+        mensagem: 'Usuario atualizado com sucesso',
+        fotoUrl,
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
     }
-
-    res.json({
-      mensagem: 'Usuario atualizado com sucesso',
-      fotoUrl,
-    });
   } catch (error) {
     console.error(error);
     safeUnlink(req.file?.path);
@@ -250,23 +242,13 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
 router.delete('/usuarios/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
-    const roleHint = req.body?.role ?? req.query.role;
-    const { user: usuario, ambiguous, invalidRole } = await resolveUserById(pool, id, roleHint);
-
-    if (invalidRole) {
-      return res.status(400).json({ erro: 'Role informado e invalido' });
-    }
-
-    if (ambiguous) {
-      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
-    }
+    const usuario = await resolveUserById(pool, id);
 
     if (!usuario) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
     }
 
-    const tabela = usuario.source_table;
-    const [, result] = await pool.execute(`DELETE FROM ${tabela} WHERE id = ?`, [id]);
+    const [, result] = await pool.execute('DELETE FROM usuario WHERE id = ?', [id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });

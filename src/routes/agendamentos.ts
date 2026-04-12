@@ -172,12 +172,13 @@ router.get('/agendamentos', async (req, res) => {
         99 AS plano_id,
         a.data_hora AS proximo_pag,
         a.status,
-        u.nome AS usuario_nome,
+        ub.nome AS usuario_nome,
         e.nome AS estabelecimento_nome,
         (SELECT status FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS pagamento_status,
         (SELECT quantidade FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS valor
       FROM agendamentos a
-      LEFT JOIN usuarioCliente u ON u.id = a.cliente_id
+      LEFT JOIN usuarioCliente uc ON uc.usuario_id = a.cliente_id
+      LEFT JOIN usuario ub ON ub.id = uc.usuario_id
       LEFT JOIN establishments e ON e.id = a.estabelecimento_id
       WHERE a.cliente_id = ?
       ORDER BY a.data_hora DESC
@@ -221,10 +222,11 @@ router.get('/agendamentos/minha-barbearia', async (req, res) => {
         i.plano_id,
         i."proxima_data_cobrança" AS proximo_pag,
         i.status,
-        u.nome AS usuario_nome,
+        ub.nome AS usuario_nome,
         e.nome AS estabelecimento_nome
       FROM inscricoes i
-      LEFT JOIN usuarioCliente u ON u.id = i.usuario_id
+      LEFT JOIN usuarioCliente uc ON uc.usuario_id = i.usuario_id
+      LEFT JOIN usuario ub ON ub.id = uc.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
       WHERE i.estabelecimento_id IN (${placeholders})
       ORDER BY i."proxima_data_cobrança" DESC

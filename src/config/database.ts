@@ -94,6 +94,7 @@ const rawPool = connectionString
   ? new Pool({
       connectionString,
       ssl,
+      family: 4,
       max: Number(process.env.DB_POOL_MAX || 10),
     })
   : new Pool({
@@ -103,6 +104,7 @@ const rawPool = connectionString
       user: process.env.PGUSER || process.env.DB_USER || 'postgres',
       password: process.env.PGPASSWORD || process.env.DB_PASSWORD,
       ssl,
+      family: 4,
       max: Number(process.env.DB_POOL_MAX || 10),
     });
 
