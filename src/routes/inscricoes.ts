@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from '../config/database';
+import { findClientById } from '../services/users';
 
 const router = express.Router();
 
@@ -9,6 +10,12 @@ router.post('/inscricoes', async (req, res) => {
 
     if (!usuario_id || !plano_id) {
       return res.status(400).json({ erro: 'usuario_id e plano_id sao obrigatorios' });
+    }
+
+    const cliente = await findClientById(pool, usuario_id);
+
+    if (!cliente) {
+      return res.status(404).json({ erro: 'Cliente nao encontrado' });
     }
 
     const [planos] = await pool.execute(

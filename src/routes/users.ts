@@ -2,30 +2,66 @@ import express from 'express';
 import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadProfile } from '../config/uploads';
+import {
+  ESTABLISHMENT_ADMIN_ROLE,
+  findUsersByEmailOrCpf,
+  findUsersByLogin,
+  formatUser,
+  getUserTable,
+  parseUserRole,
+  queryUnifiedUsers,
+  resolveUserById,
+} from '../services/users';
 import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
 
 router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
   try {
-    const { nome, email, senha, cpf, telefone, role } = req.body;
+    const { nome, email, senha, cpf, telefone, role, cnpj } = req.body;
+    const parsedRole = parseUserRole(role);
 
-    if (!nome || !email || !senha || !cpf || !telefone || !role) {
+    if (!nome || !email || !senha || !cpf || !telefone || !parsedRole) {
       safeUnlink(req.file?.path);
       return res.status(400).json({ erro: 'Todos os campos sao obrigatorios' });
     }
 
+    if (parsedRole === ESTABLISHMENT_ADMIN_ROLE && !cnpj) {
+      safeUnlink(req.file?.path);
+      return res.status(400).json({ erro: 'CNPJ e obrigatorio para administradores de estabelecimento' });
+    }
+
+    const conflitos = await findUsersByEmailOrCpf(pool, { email, cpf });
+
+    if (conflitos.length > 0) {
+      safeUnlink(req.file?.path);
+      return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    }
+
     const fotoUrl = req.file ? `/uploads/profile-photos/${req.file.filename}` : DEFAULT_PROFILE_PHOTO;
+    const tabela = getUserTable(parsedRole);
+
+    const insertSql =
+      tabela === 'usuarioADM'
+        ? 'INSERT INTO usuarioADM (email, senha, nome, cpf, telefone, role, imagem_url, cnpj) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        : 'INSERT INTO usuarioCliente (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)';
+
+    const insertParams =
+      tabela === 'usuarioADM'
+        ? [email, senha, nome, cpf, telefone, parsedRole, fotoUrl, cnpj]
+        : [email, senha, nome, cpf, telefone, parsedRole, fotoUrl];
 
     const [, result] = await pool.execute(
-      'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [email, senha, nome, cpf, telefone, role, fotoUrl],
+      insertSql,
+      insertParams,
     );
 
     res.status(201).json({
       mensagem: 'Usuario criado com sucesso',
       id: result.insertId,
       fotoUrl,
+      role: parsedRole,
+      userTable: tabela,
     });
   } catch (error) {
     console.error(error);
@@ -36,10 +72,25 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
 
 router.get('/usuarios', async (_req, res) => {
   try {
-    const [usuarios] = await pool.execute(
-      'SELECT id, nome, email, imagem_url AS foto_url FROM usuario',
+    const roleQuery = typeof _req.query.role === 'string' ? _req.query.role : undefined;
+    const parsedRole = roleQuery ? parseUserRole(roleQuery) : null;
+
+    if (roleQuery && !parsedRole) {
+      return res.status(400).json({ erro: 'Role informado e invalido' });
+    }
+
+    const usuarios = await queryUnifiedUsers(
+      pool,
+      parsedRole ? 'WHERE role = ? ORDER BY nome ASC' : 'ORDER BY nome ASC',
+      parsedRole ? [parsedRole] : [],
     );
-    res.json(usuarios);
+
+    res.json(
+      usuarios.map((usuario) => ({
+        ...formatUser(usuario),
+        foto_url: usuario.imagem_url || null,
+      })),
+    );
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao buscar usuarios' });
@@ -54,23 +105,21 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ erro: 'Usuario e senha sao obrigatorios' });
     }
 
-    const [usuarios] = await pool.execute(
-      'SELECT id, nome, email, cpf, telefone, role, imagem_url FROM usuario WHERE (email = ? OR cpf = ?) AND senha = ?',
-      [usuario, usuario, senha],
-    );
+    const usuarios = await findUsersByLogin(pool, usuario, senha);
 
     if (usuarios.length === 0) {
       return res.status(401).json({ erro: 'Credenciais invalidas' });
+    }
+
+    if (usuarios.length > 1) {
+      return res.status(409).json({ erro: 'Ha mais de uma conta com estas credenciais. Informe o tipo de conta.' });
     }
 
     const usuarioLogado = usuarios[0];
     res.json({
       mensagem: 'Login realizado com sucesso',
       usuario: {
-        id: usuarioLogado.id,
-        nome: usuarioLogado.nome,
-        email: usuarioLogado.email,
-        role: usuarioLogado.role,
+        ...formatUser(usuarioLogado),
         fotoUrl: usuarioLogado.imagem_url || DEFAULT_PROFILE_PHOTO,
       },
     });
@@ -82,16 +131,24 @@ router.post('/login', async (req, res) => {
 
 router.get('/usuarios/:id', async (req, res) => {
   try {
-    const [usuarios] = await pool.execute(
-      'SELECT id, nome, email, imagem_url AS foto_url FROM usuario WHERE id = ?',
-      [req.params.id],
-    );
+    const { user, ambiguous, invalidRole } = await resolveUserById(pool, req.params.id, req.query.role);
 
-    if (usuarios.length === 0) {
+    if (invalidRole) {
+      return res.status(400).json({ erro: 'Role informado e invalido' });
+    }
+
+    if (ambiguous) {
+      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
+    }
+
+    if (!user) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
     }
 
-    res.json(usuarios[0]);
+    res.json({
+      ...formatUser(user),
+      foto_url: user.imagem_url || null,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao buscar usuario' });
@@ -101,16 +158,27 @@ router.get('/usuarios/:id', async (req, res) => {
 router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
   try {
     const id = String(req.params.id);
-    const { nome, email, senha } = req.body;
+    const { nome, email, senha, cpf, telefone, cnpj } = req.body;
+    const roleHint = req.body.role ?? req.query.role;
 
-    const [usuarioAtual] = await pool.execute('SELECT imagem_url FROM usuario WHERE id = ?', [id]);
+    const { user: usuarioAtual, ambiguous, invalidRole } = await resolveUserById(pool, id, roleHint);
 
-    if (usuarioAtual.length === 0) {
+    if (invalidRole) {
+      safeUnlink(req.file?.path);
+      return res.status(400).json({ erro: 'Role informado e invalido' });
+    }
+
+    if (ambiguous) {
+      safeUnlink(req.file?.path);
+      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
+    }
+
+    if (!usuarioAtual) {
       safeUnlink(req.file?.path);
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
     }
 
-    let fotoUrl = usuarioAtual[0].imagem_url;
+    let fotoUrl = usuarioAtual.imagem_url;
 
     if (req.file) {
       if (fotoUrl && fotoUrl !== DEFAULT_PROFILE_PHOTO) {
@@ -119,9 +187,49 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
       fotoUrl = `/uploads/profile-photos/${req.file.filename}`;
     }
 
+    const proximoEmail = email ?? usuarioAtual.email;
+    const proximoCpf = cpf ?? usuarioAtual.cpf;
+    const conflitos = await findUsersByEmailOrCpf(pool, {
+      email: proximoEmail,
+      cpf: proximoCpf,
+      exclude: {
+        id,
+        sourceTable: usuarioAtual.source_table,
+      },
+    });
+
+    if (conflitos.length > 0) {
+      safeUnlink(req.file?.path);
+      return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    }
+
+    const tabela = usuarioAtual.source_table;
+    const nomeAtualizado = nome ?? usuarioAtual.nome;
+    const senhaAtualizada = senha ?? usuarioAtual.senha;
+    const telefoneAtualizado = telefone ?? usuarioAtual.telefone;
+
+    const updateSql =
+      tabela === 'usuarioADM'
+        ? 'UPDATE usuarioADM SET nome = ?, email = ?, senha = ?, cpf = ?, telefone = ?, imagem_url = ?, cnpj = ? WHERE id = ?'
+        : 'UPDATE usuarioCliente SET nome = ?, email = ?, senha = ?, cpf = ?, telefone = ?, imagem_url = ? WHERE id = ?';
+
+    const updateParams =
+      tabela === 'usuarioADM'
+        ? [
+            nomeAtualizado,
+            proximoEmail,
+            senhaAtualizada,
+            proximoCpf,
+            telefoneAtualizado,
+            fotoUrl,
+            cnpj ?? usuarioAtual.cnpj ?? null,
+            id,
+          ]
+        : [nomeAtualizado, proximoEmail, senhaAtualizada, proximoCpf, telefoneAtualizado, fotoUrl, id];
+
     const [, result] = await pool.execute(
-      'UPDATE usuario SET nome = ?, email = ?, senha = ?, imagem_url = ? WHERE id = ?',
-      [nome, email, senha, fotoUrl, id],
+      updateSql,
+      updateParams,
     );
 
     if (result.affectedRows === 0) {
@@ -142,17 +250,30 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
 router.delete('/usuarios/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
+    const roleHint = req.body?.role ?? req.query.role;
+    const { user: usuario, ambiguous, invalidRole } = await resolveUserById(pool, id, roleHint);
 
-    const [usuario] = await pool.execute('SELECT imagem_url FROM usuario WHERE id = ?', [id]);
+    if (invalidRole) {
+      return res.status(400).json({ erro: 'Role informado e invalido' });
+    }
 
-    const [, result] = await pool.execute('DELETE FROM usuario WHERE id = ?', [id]);
+    if (ambiguous) {
+      return res.status(409).json({ erro: 'Ha contas Cliente e ADM com o mesmo id. Informe o role na requisicao.' });
+    }
+
+    if (!usuario) {
+      return res.status(404).json({ erro: 'Usuario nao encontrado' });
+    }
+
+    const tabela = usuario.source_table;
+    const [, result] = await pool.execute(`DELETE FROM ${tabela} WHERE id = ?`, [id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
     }
 
-    if (usuario.length > 0 && usuario[0].imagem_url && usuario[0].imagem_url !== DEFAULT_PROFILE_PHOTO) {
-      safeUnlink(resolveAppPath(usuario[0].imagem_url));
+    if (usuario.imagem_url && usuario.imagem_url !== DEFAULT_PROFILE_PHOTO) {
+      safeUnlink(resolveAppPath(usuario.imagem_url));
     }
 
     res.json({ mensagem: 'Usuario deletado com sucesso' });

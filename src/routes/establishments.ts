@@ -2,6 +2,7 @@ import express from 'express';
 import { DEFAULT_ESTABLISHMENT_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadEstablishment } from '../config/uploads';
+import { findAdminById } from '../services/users';
 import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
@@ -200,6 +201,13 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
         .json({ erro: 'Campos obrigatorios: dono_id, nome, rua, cidade, stado, cep' });
     }
 
+    const administrador = await findAdminById(pool, dono_id);
+
+    if (!administrador) {
+      safeUnlink(req.file?.path);
+      return res.status(404).json({ erro: 'Administrador responsavel nao encontrado' });
+    }
+
     const imagemUrl = req.file
       ? `/uploads/establishment-photos/${req.file.filename}`
       : DEFAULT_ESTABLISHMENT_PHOTO;
@@ -385,6 +393,59 @@ function extractEmbedUrlFromGoogleMapsUrl(value: string | null | undefined) {
   return null;
 }
 
+function isGoogleMapsShortLink(value: string | null | undefined) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  try {
+    const url = new URL(value.trim());
+    return /(^|\.)maps\.app\.goo\.gl$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function extractEmbedUrlFromGoogleMapsHtml(html: string) {
+  const previewHrefMatch = html.match(/<link[^>]+href=\"([^\"]*\/maps\/preview\/place[^\"]+)\"/i);
+  if (previewHrefMatch?.[1]) {
+    const decodedPreviewHref = previewHrefMatch[1].replace(/&amp;/g, '&');
+    try {
+      const previewUrl = new URL(decodedPreviewHref, 'https://www.google.com');
+      const q = previewUrl.searchParams.get('q')?.trim();
+      if (q) {
+        return buildGoogleMapsEmbedUrl(q);
+      }
+    } catch {
+      // Ignore malformed preview links and keep trying other patterns.
+    }
+  }
+
+  const dataMatch = html.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+  if (dataMatch) {
+    return buildGoogleMapsEmbedUrl(`${dataMatch[1]},${dataMatch[2]}`);
+  }
+
+  return null;
+}
+
+async function resolveGoogleMapsShortUrl(value: string | null | undefined) {
+  if (!isGoogleMapsShortLink(value)) {
+    return typeof value === 'string' ? value.trim() : value ?? null;
+  }
+
+  const response = await fetch(value, {
+    method: 'GET',
+    redirect: 'follow',
+    signal: AbortSignal.timeout(8000),
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; BarberShopMapsResolver/1.0)',
+    },
+  });
+
+  return response.url || value;
+}
+
 async function updateEstablishmentLocation(req: express.Request, res: express.Response) {
   const id = String(req.params.id);
   const latitudeProvided = hasOwn(req.body, 'latitude');
@@ -416,13 +477,21 @@ async function updateEstablishmentLocation(req: express.Request, res: express.Re
     const nextLongitude = longitudeProvided
       ? normalizeLocationValue(req.body.longitude)
       : estabelecimentoAtual.longitude;
-    const nextGoogleMapsUrl = mapsUrlProvided
+    let nextGoogleMapsUrl = mapsUrlProvided
       ? normalizeLocationValue(
           typeof req.body.google_maps_url === 'string'
             ? req.body.google_maps_url.trim()
             : req.body.google_maps_url,
         )
       : estabelecimentoAtual.google_maps_url;
+
+    if (typeof nextGoogleMapsUrl === 'string' && nextGoogleMapsUrl) {
+      try {
+        nextGoogleMapsUrl = await resolveGoogleMapsShortUrl(nextGoogleMapsUrl);
+      } catch (error) {
+        console.error('Erro ao resolver link curto do Google Maps ao salvar:', error);
+      }
+    }
     const shouldResetVerification =
       nextLatitude !== estabelecimentoAtual.latitude ||
       nextLongitude !== estabelecimentoAtual.longitude ||
@@ -482,7 +551,12 @@ router.get('/maps/embed-url', async (req, res) => {
     });
 
     const resolvedUrl = response.url || rawUrl;
-    const embedUrl = extractEmbedUrlFromGoogleMapsUrl(resolvedUrl);
+    let embedUrl = extractEmbedUrlFromGoogleMapsUrl(resolvedUrl);
+
+    if (!embedUrl) {
+      const html = await response.text();
+      embedUrl = extractEmbedUrlFromGoogleMapsHtml(html);
+    }
 
     if (!embedUrl) {
       return res.status(422).json({ erro: 'Nao foi possivel converter o link para embed', resolvedUrl });

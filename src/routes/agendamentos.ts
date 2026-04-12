@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../config/database';
 import { calcularBeneficios } from '../services/benefits';
+import { findClientById } from '../services/users';
 
 const router = express.Router();
 
@@ -12,6 +13,12 @@ router.post('/agendamentos', async (req, res) => {
       return res.status(400).json({
         erro: 'Campos obrigatorios: usuario_id, estabelecimento_id, servico_id, proximo_pag',
       });
+    }
+
+    const cliente = await findClientById(pool, usuario_id);
+
+    if (!cliente) {
+      return res.status(404).json({ erro: 'Cliente nao encontrado' });
     }
 
     const [servicos] = await pool.execute('SELECT * FROM servicos WHERE id = ? AND ativo = 1', [
@@ -170,7 +177,7 @@ router.get('/agendamentos', async (req, res) => {
         (SELECT status FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS pagamento_status,
         (SELECT quantidade FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS valor
       FROM agendamentos a
-      LEFT JOIN usuario u ON u.id = a.cliente_id
+      LEFT JOIN usuarioCliente u ON u.id = a.cliente_id
       LEFT JOIN establishments e ON e.id = a.estabelecimento_id
       WHERE a.cliente_id = ?
       ORDER BY a.data_hora DESC
@@ -217,7 +224,7 @@ router.get('/agendamentos/minha-barbearia', async (req, res) => {
         u.nome AS usuario_nome,
         e.nome AS estabelecimento_nome
       FROM inscricoes i
-      LEFT JOIN usuario u ON u.id = i.usuario_id
+      LEFT JOIN usuarioCliente u ON u.id = i.usuario_id
       LEFT JOIN establishments e ON e.id = i.estabelecimento_id
       WHERE i.estabelecimento_id IN (${placeholders})
       ORDER BY i."proxima_data_cobrança" DESC
