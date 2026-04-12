@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Barbearia">
+  <rect width="120" height="120" rx="18" fill="#16202a"/>
+  <rect x="16" y="18" width="88" height="16" rx="8" fill="#c2410c"/>
+  <rect x="16" y="34" width="88" height="12" rx="6" fill="#f3f4f6"/>
+  <path d="M28 48h64v38a8 8 0 0 1-8 8H36a8 8 0 0 1-8-8V48Z" fill="#243240"/>
+  <path d="M45 60h30v34H45z" fill="#0f1720"/>
+  <path d="M52 26h8v14h-8zm16 0h8v14h-8z" fill="#f3f4f6"/>
+  <path d="M38 70h10v10H38zm34 0h10v10H72z" fill="#e2e8f0"/>
+</svg>

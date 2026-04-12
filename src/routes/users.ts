@@ -15,7 +15,8 @@ import {
   queryUsers,
   resolveUserById,
 } from '../services/users';
-import { resolveAppPath, safeUnlink } from '../utils/files';
+import { safeUnlink } from '../utils/files';
+import { deleteImageAsset, uploadImageAsset } from '../services/storage';
 
 const router = express.Router();
 
@@ -37,6 +38,8 @@ async function resolveOwnedEstablishment(establishmentId: string, adminUserId: s
 }
 
 router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
+  let fotoUrlParaLimpeza: string | null = null;
+
   try {
     const { nome, email, senha, cpf, telefone, role, cnpj } = req.body;
     const parsedRole = parseUserRole(role);
@@ -65,7 +68,8 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
       return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
     }
 
-    const fotoUrl = req.file ? `/uploads/profile-photos/${req.file.filename}` : DEFAULT_PROFILE_PHOTO;
+    const fotoUrl = req.file ? await uploadImageAsset(req.file, 'profile') : DEFAULT_PROFILE_PHOTO;
+    fotoUrlParaLimpeza = req.file ? fotoUrl : null;
     const connection = await pool.getConnection();
     await connection.beginTransaction();
 
@@ -91,6 +95,7 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
 
       await connection.commit();
       connection.release();
+      fotoUrlParaLimpeza = null;
 
       res.status(201).json({
         mensagem: 'Usuario criado com sucesso',
@@ -106,7 +111,9 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     }
   } catch (error) {
     console.error(error);
-    safeUnlink(req.file?.path);
+    if (fotoUrlParaLimpeza) {
+      await deleteImageAsset(fotoUrlParaLimpeza, 'profile', DEFAULT_PROFILE_PHOTO);
+    }
     res.status(500).json({ erro: 'Erro ao criar usuario' });
   }
 });
@@ -319,9 +326,7 @@ router.delete('/establishments/:id/barbers/:barberId', async (req, res) => {
       return res.status(404).json({ erro: 'Barbeiro nao encontrado' });
     }
 
-    if (barber.imagem_url && barber.imagem_url !== DEFAULT_PROFILE_PHOTO) {
-      safeUnlink(resolveAppPath(barber.imagem_url));
-    }
+    await deleteImageAsset(barber.imagem_url, 'profile', DEFAULT_PROFILE_PHOTO);
 
     res.json({ mensagem: 'Barbeiro deletado com sucesso' });
   } catch (error) {
@@ -418,6 +423,8 @@ router.get('/usuarios/:id', async (req, res) => {
 });
 
 router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
+  let uploadedPhotoUrl: string | null = null;
+
   try {
     const id = String(req.params.id);
     const { nome, email, senha, cpf, telefone, cnpj } = req.body;
@@ -431,10 +438,8 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     let fotoUrl = usuarioAtual.imagem_url;
 
     if (req.file) {
-      if (fotoUrl && fotoUrl !== DEFAULT_PROFILE_PHOTO) {
-        safeUnlink(resolveAppPath(fotoUrl));
-      }
-      fotoUrl = `/uploads/profile-photos/${req.file.filename}`;
+      uploadedPhotoUrl = await uploadImageAsset(req.file, 'profile');
+      fotoUrl = uploadedPhotoUrl;
     }
 
     const proximoEmail = email ?? usuarioAtual.email;
@@ -471,6 +476,11 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
 
       await connection.commit();
       connection.release();
+      uploadedPhotoUrl = null;
+
+      if (req.file && usuarioAtual.imagem_url !== fotoUrl) {
+        await deleteImageAsset(usuarioAtual.imagem_url, 'profile', DEFAULT_PROFILE_PHOTO);
+      }
 
       if (result.affectedRows === 0) {
         return res.status(404).json({ erro: 'Usuario nao encontrado' });
@@ -487,7 +497,9 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     }
   } catch (error) {
     console.error(error);
-    safeUnlink(req.file?.path);
+    if (uploadedPhotoUrl) {
+      await deleteImageAsset(uploadedPhotoUrl, 'profile', DEFAULT_PROFILE_PHOTO);
+    }
     res.status(500).json({ erro: 'Erro ao atualizar usuario' });
   }
 });
@@ -507,9 +519,7 @@ router.delete('/usuarios/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Usuario nao encontrado' });
     }
 
-    if (usuario.imagem_url && usuario.imagem_url !== DEFAULT_PROFILE_PHOTO) {
-      safeUnlink(resolveAppPath(usuario.imagem_url));
-    }
+    await deleteImageAsset(usuario.imagem_url, 'profile', DEFAULT_PROFILE_PHOTO);
 
     res.json({ mensagem: 'Usuario deletado com sucesso' });
   } catch (error) {

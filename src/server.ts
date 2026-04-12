@@ -1,16 +1,24 @@
 import { config } from 'dotenv';
 import path from 'path';
-import app from './app';
-import { logDatabaseConfig } from './config/database';
 import { SERVER_ROOT } from './config/paths';
-import { ensureUploadDirs } from './utils/files';
 
 config({ path: path.resolve(SERVER_ROOT, '.env') });
+
+// Carregando o app e as configurações antes de iniciar o servidor
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const app = require('./app').default;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { logDatabaseConfig } = require('./config/database');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { logStorageConfig } = require('./services/storage');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { ensureUploadDirs } = require('./utils/files');
 
 const PORT = Number(process.env.PORT || 3000);
 
 ensureUploadDirs();
 logDatabaseConfig();
+logStorageConfig();
 
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);

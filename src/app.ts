@@ -12,10 +12,31 @@ import usersRoutes from './routes/users';
 import { SERVER_ROOT } from './config/paths';
 
 const app = express();
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
 
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('Origem nao permitida pelo CORS'));
+  },
+}));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(SERVER_ROOT, 'uploads')));
+app.get('/healthz', (_req, res) => {
+  res.status(200).json({ ok: true });
+});
 
 app.use(usersRoutes);
 app.use(establishmentsRoutes);

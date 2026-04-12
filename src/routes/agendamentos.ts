@@ -5,6 +5,10 @@ import { findClientById } from '../services/users';
 
 const router = express.Router();
 
+function isAgendamentoFinalizado(status: unknown) {
+  return status === 'cancelado' || status === 'completo';
+}
+
 router.post('/agendamentos', async (req, res) => {
   try {
     const { usuario_id, estabelecimento_id, barbeiro_id, servico_id, proximo_pag, metodo_pagamento } = req.body;
@@ -358,6 +362,10 @@ router.patch('/agendamentos/:id/cancelar', async (req, res) => {
       return res.status(404).json({ erro: 'Agendamento nao encontrado' });
     }
 
+    if (isAgendamentoFinalizado(agendamento[0].status)) {
+      return res.status(409).json({ erro: 'Este agendamento nao pode mais ser cancelado' });
+    }
+
     await pool.execute('UPDATE agendamentos SET status = ? WHERE id = ?', ['cancelado', id]);
 
     res.json({ mensagem: 'Agendamento cancelado com sucesso' });
@@ -383,6 +391,10 @@ router.patch('/agendamentos/:id/reagendar', async (req, res) => {
 
     if (agendamento.length === 0) {
       return res.status(404).json({ erro: 'Agendamento nao encontrado' });
+    }
+
+    if (isAgendamentoFinalizado(agendamento[0].status)) {
+      return res.status(409).json({ erro: 'Este agendamento nao pode mais ser reagendado' });
     }
 
     const barbeiroId = agendamento[0].idbarbeiro ?? agendamento[0].barbeiro_id;
@@ -412,6 +424,68 @@ router.patch('/agendamentos/:id/reagendar', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao reagendar agendamento' });
+  }
+});
+
+router.patch('/agendamentos/:id/barbeiro/cancelar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { usuario_id } = req.body;
+
+    if (!usuario_id) {
+      return res.status(400).json({ erro: 'usuario_id e obrigatorio' });
+    }
+
+    const [agendamento] = await pool.execute('SELECT * FROM agendamentos WHERE id = ? AND idbarbeiro = ?', [
+      id,
+      usuario_id,
+    ]);
+
+    if (agendamento.length === 0) {
+      return res.status(404).json({ erro: 'Agendamento nao encontrado para este barbeiro' });
+    }
+
+    if (isAgendamentoFinalizado(agendamento[0].status)) {
+      return res.status(409).json({ erro: 'Este agendamento nao pode mais ser cancelado' });
+    }
+
+    await pool.execute('UPDATE agendamentos SET status = ? WHERE id = ?', ['cancelado', id]);
+
+    res.json({ mensagem: 'Agendamento cancelado com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao cancelar agendamento' });
+  }
+});
+
+router.patch('/agendamentos/:id/barbeiro/concluir', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { usuario_id } = req.body;
+
+    if (!usuario_id) {
+      return res.status(400).json({ erro: 'usuario_id e obrigatorio' });
+    }
+
+    const [agendamento] = await pool.execute('SELECT * FROM agendamentos WHERE id = ? AND idbarbeiro = ?', [
+      id,
+      usuario_id,
+    ]);
+
+    if (agendamento.length === 0) {
+      return res.status(404).json({ erro: 'Agendamento nao encontrado para este barbeiro' });
+    }
+
+    if (isAgendamentoFinalizado(agendamento[0].status)) {
+      return res.status(409).json({ erro: 'Este agendamento nao pode mais ser concluido' });
+    }
+
+    await pool.execute('UPDATE agendamentos SET status = ? WHERE id = ?', ['completo', id]);
+
+    res.json({ mensagem: 'Agendamento concluido com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao concluir agendamento' });
   }
 });
 

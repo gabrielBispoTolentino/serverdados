@@ -3,7 +3,8 @@ import { DEFAULT_ESTABLISHMENT_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadEstablishment } from '../config/uploads';
 import { findAdminById } from '../services/users';
-import { resolveAppPath, safeUnlink } from '../utils/files';
+import { safeUnlink } from '../utils/files';
+import { deleteImageAsset, uploadImageAsset } from '../services/storage';
 
 const router = express.Router();
 
@@ -191,6 +192,8 @@ router.get('/establishments/:id', async (req, res) => {
 });
 
 router.post('/establishments', uploadEstablishment.single('foto'), async (req, res) => {
+  let imagemUrlParaLimpeza: string | null = null;
+
   try {
     const { dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
 
@@ -209,8 +212,9 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
     }
 
     const imagemUrl = req.file
-      ? `/uploads/establishment-photos/${req.file.filename}`
+      ? await uploadImageAsset(req.file, 'establishment')
       : DEFAULT_ESTABLISHMENT_PHOTO;
+    imagemUrlParaLimpeza = req.file ? imagemUrl : null;
 
     const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
 
@@ -240,14 +244,19 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
       id: result.insertId,
       imagemUrl,
     });
+    imagemUrlParaLimpeza = null;
   } catch (error) {
     console.error(error);
-    safeUnlink(req.file?.path);
+    if (imagemUrlParaLimpeza) {
+      await deleteImageAsset(imagemUrlParaLimpeza, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO);
+    }
     res.status(500).json({ erro: 'Erro ao criar estabelecimento' });
   }
 });
 
 router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req, res) => {
+  let imagemUrlUploadNova: string | null = null;
+
   try {
     const id = String(req.params.id);
     const { nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
@@ -267,10 +276,8 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
     let imagemUrl = estabelecimentoAtual[0].imagem_url;
 
     if (req.file) {
-      if (imagemUrl && imagemUrl !== DEFAULT_ESTABLISHMENT_PHOTO) {
-        safeUnlink(resolveAppPath(imagemUrl));
-      }
-      imagemUrl = `/uploads/establishment-photos/${req.file.filename}`;
+      imagemUrl = await uploadImageAsset(req.file, 'establishment');
+      imagemUrlUploadNova = imagemUrl;
     }
 
     const [, result] = await pool.execute(
@@ -286,13 +293,21 @@ router.put('/establishments/:id', uploadEstablishment.single('foto'), async (req
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
+    if (req.file && estabelecimentoAtual[0].imagem_url !== imagemUrl) {
+      await deleteImageAsset(estabelecimentoAtual[0].imagem_url, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO);
+    }
+
+    imagemUrlUploadNova = null;
+
     res.json({
       mensagem: 'Estabelecimento atualizado com sucesso',
       imagemUrl,
     });
   } catch (error) {
     console.error(error);
-    safeUnlink(req.file?.path);
+    if (imagemUrlUploadNova) {
+      await deleteImageAsset(imagemUrlUploadNova, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO);
+    }
     res.status(500).json({ erro: 'Erro ao atualizar estabelecimento' });
   }
 });
@@ -315,12 +330,8 @@ router.delete('/establishments/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    if (
-      estabelecimento.length > 0 &&
-      estabelecimento[0].imagem_url &&
-      estabelecimento[0].imagem_url !== DEFAULT_ESTABLISHMENT_PHOTO
-    ) {
-      safeUnlink(resolveAppPath(estabelecimento[0].imagem_url));
+    if (estabelecimento.length > 0) {
+      await deleteImageAsset(estabelecimento[0].imagem_url, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO);
     }
 
     res.json({ mensagem: 'Estabelecimento deletado com sucesso' });
