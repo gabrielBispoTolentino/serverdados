@@ -7,11 +7,11 @@ const router = express.Router();
 
 router.post('/agendamentos', async (req, res) => {
   try {
-    const { usuario_id, estabelecimento_id, servico_id, proximo_pag, metodo_pagamento } = req.body;
+    const { usuario_id, estabelecimento_id, barbeiro_id, servico_id, proximo_pag, metodo_pagamento } = req.body;
 
-    if (!usuario_id || !estabelecimento_id || !servico_id || !proximo_pag) {
+    if (!usuario_id || !estabelecimento_id || !barbeiro_id || !servico_id || !proximo_pag) {
       return res.status(400).json({
-        erro: 'Campos obrigatorios: usuario_id, estabelecimento_id, servico_id, proximo_pag',
+        erro: 'Campos obrigatorios: usuario_id, estabelecimento_id, barbeiro_id, servico_id, proximo_pag',
       });
     }
 
@@ -32,7 +32,7 @@ router.post('/agendamentos', async (req, res) => {
     const servico = servicos[0];
     const valorOriginal = Number(servico.preco_base);
 
-    const [estabelecimentos] = await pool.execute('SELECT dono_id FROM establishments WHERE id = ?', [
+    const [estabelecimentos] = await pool.execute('SELECT id FROM establishments WHERE id = ?', [
       estabelecimento_id,
     ]);
 
@@ -40,17 +40,31 @@ router.post('/agendamentos', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const barbeiroId = estabelecimentos[0].dono_id;
+    const [barbeiros] = await pool.execute(
+      `
+      SELECT u.id
+      FROM usuario u
+      INNER JOIN usuarioBarber ub ON ub.usuario_id = u.id
+      WHERE u.id = ?
+        AND ub.idbarberworker = ?
+      LIMIT 1
+      `,
+      [barbeiro_id, estabelecimento_id],
+    );
+
+    if (barbeiros.length === 0) {
+      return res.status(404).json({ erro: 'Barbeiro nao encontrado para este estabelecimento' });
+    }
 
     const [conflitos] = await pool.execute(
       `
       SELECT id
       FROM agendamentos
-      WHERE barbeiro_id = ?
+      WHERE idbarbeiro = ?
         AND data_hora = ?
         AND status IN ('pendente', 'confirmado')
     `,
-      [barbeiroId, proximo_pag],
+      [barbeiro_id, proximo_pag],
     );
 
     if (conflitos.length > 0) {
@@ -92,8 +106,8 @@ router.post('/agendamentos', async (req, res) => {
 
     try {
       const [, resultAgendamento] = await connection.execute(
-        'INSERT INTO agendamentos (cliente_id, barbeiro_id, estabelecimento_id, data_hora, status, criado_em) VALUES (?, ?, ?, ?, ?, NOW())',
-        [usuario_id, barbeiroId, estabelecimento_id, proximo_pag, 'pendente'],
+        'INSERT INTO agendamentos (cliente_id, barbeiro_id, estabelecimento_id, idbarbeiro, data_hora, status, criado_em) VALUES (?, ?, ?, ?, ?, ?, NOW())',
+        [usuario_id, estabelecimento_id, estabelecimento_id, barbeiro_id, proximo_pag, 'pendente'],
       );
 
       const agendamentoId = resultAgendamento.insertId;
@@ -241,16 +255,52 @@ router.get('/agendamentos/minha-barbearia', async (req, res) => {
   }
 });
 
+router.get('/agendamentos/barbeiro', async (req, res) => {
+  try {
+    const { usuario_id } = req.query;
+
+    if (!usuario_id) {
+      return res.status(400).json({ erro: 'usuario_id e obrigatorio' });
+    }
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        a.id,
+        a.cliente_id AS usuario_id,
+        a.estabelecimento_id,
+        a.data_hora AS proximo_pag,
+        a.status,
+        ucad.nome AS usuario_nome,
+        e.nome AS estabelecimento_nome,
+        (SELECT status FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS pagamento_status,
+        (SELECT quantidade FROM pagamento WHERE agendamento_id = a.id ORDER BY criado_em DESC LIMIT 1) AS valor
+      FROM agendamentos a
+      LEFT JOIN usuario ucad ON ucad.id = a.cliente_id
+      LEFT JOIN establishments e ON e.id = a.estabelecimento_id
+      WHERE a.idbarbeiro = ?
+      ORDER BY a.data_hora ASC
+      `,
+      [usuario_id as string],
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao buscar agendamentos do barbeiro' });
+  }
+});
+
 router.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req, res) => {
   try {
     const { estabelecimento_id } = req.params;
-    const { data } = req.query;
+    const { data, barbeiro_id } = req.query;
 
-    if (!data) {
-      return res.status(400).json({ erro: 'Data e obrigatoria' });
+    if (!data || !barbeiro_id) {
+      return res.status(400).json({ erro: 'Data e barbeiro_id sao obrigatorios' });
     }
 
-    const [estabelecimentos] = await pool.execute('SELECT dono_id FROM establishments WHERE id = ?', [
+    const [estabelecimentos] = await pool.execute('SELECT id FROM establishments WHERE id = ?', [
       estabelecimento_id,
     ]);
 
@@ -258,17 +308,31 @@ router.get('/agendamentos/horarios-disponiveis/:estabelecimento_id', async (req,
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const barbeiroId = estabelecimentos[0].dono_id;
+    const [barbeiros] = await pool.execute(
+      `
+      SELECT u.id
+      FROM usuario u
+      INNER JOIN usuarioBarber ub ON ub.usuario_id = u.id
+      WHERE u.id = ?
+        AND ub.idbarberworker = ?
+      LIMIT 1
+      `,
+      [barbeiro_id as string, estabelecimento_id],
+    );
+
+    if (barbeiros.length === 0) {
+      return res.status(404).json({ erro: 'Barbeiro nao encontrado para este estabelecimento' });
+    }
 
     const [ocupados] = await pool.execute(
       `
       SELECT data_hora
       FROM agendamentos
-      WHERE barbeiro_id = ?
+      WHERE idbarbeiro = ?
         AND DATE(data_hora) = ?
         AND status IN ('pendente', 'confirmado')
     `,
-      [barbeiroId, data as string],
+      [barbeiro_id as string, data as string],
     );
 
     const horariosOcupados = ocupados.map((row) => new Date(row.data_hora).toISOString());
@@ -321,13 +385,14 @@ router.patch('/agendamentos/:id/reagendar', async (req, res) => {
       return res.status(404).json({ erro: 'Agendamento nao encontrado' });
     }
 
-    const barbeiroId = agendamento[0].barbeiro_id;
+    const barbeiroId = agendamento[0].idbarbeiro ?? agendamento[0].barbeiro_id;
+    const barberConflictColumn = agendamento[0].idbarbeiro ? 'idbarbeiro' : 'barbeiro_id';
 
     const [conflitos] = await pool.execute(
       `
       SELECT id
       FROM agendamentos
-      WHERE barbeiro_id = ?
+      WHERE ${barberConflictColumn} = ?
         AND data_hora = ?
         AND status IN ('pendente', 'confirmado')
         AND id != ?

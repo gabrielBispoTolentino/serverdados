@@ -185,6 +185,47 @@ router.get('/establishments/:id/barbers', async (req, res) => {
   }
 });
 
+router.get('/establishments/:id/barbers/public', async (req, res) => {
+  try {
+    const establishmentId = String(req.params.id);
+
+    const [estabelecimentos] = await pool.execute(
+      'SELECT id FROM establishments WHERE id = ? AND deletedo_em IS NULL',
+      [establishmentId],
+    );
+
+    if (estabelecimentos.length === 0) {
+      return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
+    }
+
+    const [barbers] = await pool.execute(
+      `
+      SELECT
+        u.id,
+        u.nome,
+        u.imagem_url
+      FROM usuario u
+      INNER JOIN usuarioBarber ub ON ub.usuario_id = u.id
+      WHERE ub.idbarberworker = ?
+      ORDER BY u.nome ASC
+      `,
+      [establishmentId],
+    );
+
+    res.json(
+      barbers.map((barber) => ({
+        id: barber.id,
+        nome: barber.nome,
+        fotoUrl: barber.imagem_url || null,
+        imagem_url: barber.imagem_url || null,
+      })),
+    );
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao buscar barbeiros do estabelecimento' });
+  }
+});
+
 router.post('/establishments/:id/barbers', async (req, res) => {
   try {
     const establishmentId = String(req.params.id);
