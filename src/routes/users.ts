@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'crypto';
 import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadProfile } from '../config/uploads';
@@ -17,6 +18,10 @@ import {
 import { resolveAppPath, safeUnlink } from '../utils/files';
 
 const router = express.Router();
+
+function generateBarberVerifyCode() {
+  return randomBytes(4).toString('hex').toUpperCase();
+}
 
 async function resolveOwnedEstablishment(establishmentId: string, adminUserId: string) {
   const [rows] = await pool.execute(
@@ -162,6 +167,8 @@ router.get('/establishments/:id/barbers', async (req, res) => {
         u.imagem_url,
         NULL::text AS cnpj,
         ub.idbarberworker,
+        ub.verifycode,
+        ub.verified,
         'usuarioBarber'::text AS user_table
       FROM usuario u
       INNER JOIN usuarioBarber ub ON ub.usuario_id = u.id
@@ -203,6 +210,8 @@ router.post('/establishments/:id/barbers', async (req, res) => {
     await connection.beginTransaction();
 
     try {
+      const verifycode = generateBarberVerifyCode();
+
       const [, result] = await connection.execute(
         'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO],
@@ -211,8 +220,8 @@ router.post('/establishments/:id/barbers', async (req, res) => {
       const userId = result.insertId;
 
       await connection.execute(
-        'INSERT INTO usuarioBarber (usuario_id, idbarberworker) VALUES (?, ?) RETURNING usuario_id',
-        [userId, establishmentId],
+        'INSERT INTO usuarioBarber (usuario_id, idbarberworker, verifycode, verified) VALUES (?, ?, ?, ?) RETURNING usuario_id',
+        [userId, establishmentId, verifycode, false],
       );
 
       await connection.commit();
@@ -277,6 +286,47 @@ router.delete('/establishments/:id/barbers/:barberId', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao deletar barbeiro' });
+  }
+});
+
+router.post('/login/parceiros', async (req, res) => {
+  try {
+    const { email, senha, verifycode } = req.body;
+
+    if (!email || !senha || !verifycode) {
+      return res.status(400).json({ erro: 'Email, senha e codigo de verificacao sao obrigatorios' });
+    }
+
+    const barbeiros = await queryUsers(
+      pool,
+      'WHERE u.email = ? AND u.senha = ? AND ub.verifycode = ? AND ub.usuario_id IS NOT NULL LIMIT 1',
+      [email, senha, verifycode],
+    );
+
+    if (barbeiros.length === 0) {
+      return res.status(401).json({ erro: 'Credenciais de parceiro invalidas' });
+    }
+
+    const barbeiro = barbeiros[0];
+
+    if (!barbeiro.verified) {
+      await pool.execute(
+        'UPDATE usuarioBarber SET verified = ?, updated_em = NOW() WHERE usuario_id = ?',
+        [true, barbeiro.id],
+      );
+    }
+
+    res.json({
+      mensagem: 'Login de parceiro realizado com sucesso',
+      usuario: {
+        ...formatUser(barbeiro),
+        verified: true,
+        fotoUrl: barbeiro.imagem_url || DEFAULT_PROFILE_PHOTO,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao realizar login de parceiro' });
   }
 });
 

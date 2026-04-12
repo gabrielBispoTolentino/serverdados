@@ -23,6 +23,8 @@ export interface UnifiedUser {
   imagem_url: string | null;
   cnpj?: string | null;
   idbarberworker?: number | null;
+  verifycode?: string | null;
+  verified?: boolean | null;
   user_table?: UserSubtypeTable | null;
 }
 
@@ -38,6 +40,8 @@ const BASE_USER_SELECT = `
     u.imagem_url,
     ua.cnpj,
     ub.idbarberworker,
+    ub.verifycode,
+    ub.verified,
     CASE
       WHEN ub.usuario_id IS NOT NULL THEN 'usuarioBarber'
       WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
@@ -82,6 +86,8 @@ export function formatUser(user: Partial<UnifiedUser> & { role?: string | null; 
     imagem_url: user.imagem_url || null,
     cnpj: user.cnpj ?? null,
     idbarberworker: user.idbarberworker ?? null,
+    verifycode: user.verifycode ?? null,
+    verified: user.verified ?? false,
     userTable: user.user_table ?? null,
   };
 }
@@ -178,6 +184,9 @@ export async function findClientById(pool: DatabaseExecutor, id: string | number
       u.role,
       u.imagem_url,
       NULL::text AS cnpj,
+      NULL::bigint AS idbarberworker,
+      NULL::text AS verifycode,
+      NULL::boolean AS verified,
       'usuarioCliente'::text AS user_table
     FROM usuario u
     INNER JOIN usuarioCliente uc ON uc.usuario_id = u.id
@@ -202,6 +211,9 @@ export async function findAdminById(pool: DatabaseExecutor, id: string | number)
       u.role,
       u.imagem_url,
       ua.cnpj,
+      NULL::bigint AS idbarberworker,
+      NULL::text AS verifycode,
+      NULL::boolean AS verified,
       'usuarioADM'::text AS user_table
     FROM usuario u
     INNER JOIN usuarioADM ua ON ua.usuario_id = u.id
