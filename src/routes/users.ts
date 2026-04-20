@@ -320,13 +320,44 @@ router.delete('/establishments/:id/barbers/:barberId', async (req, res) => {
       return res.status(403).json({ erro: 'Este barbeiro nao pertence a esta barbearia' });
     }
 
-    const [, result] = await pool.execute('DELETE FROM usuario WHERE id = ?', [barberId]);
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ erro: 'Barbeiro nao encontrado' });
+    let usuarioRemovido = false;
+
+    try {
+      const [, barberResult] = await connection.execute(
+        'DELETE FROM usuarioBarber WHERE usuario_id = ? AND idbarberworker = ?',
+        [barberId, establishmentId],
+      );
+
+      if (barberResult.affectedRows === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.status(404).json({ erro: 'Barbeiro nao encontrado' });
+      }
+
+      const [agendamentos] = await connection.execute<{ total: number }>(
+        'SELECT COUNT(*)::int AS total FROM agendamentos WHERE idbarbeiro = ?',
+        [barberId],
+      );
+
+      if ((agendamentos[0]?.total ?? 0) === 0) {
+        const [, userResult] = await connection.execute('DELETE FROM usuario WHERE id = ?', [barberId]);
+        usuarioRemovido = userResult.affectedRows > 0;
+      }
+
+      await connection.commit();
+      connection.release();
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
     }
 
-    await deleteImageAsset(barber.imagem_url, 'profile', DEFAULT_PROFILE_PHOTO);
+    if (usuarioRemovido) {
+      await deleteImageAsset(barber.imagem_url, 'profile', DEFAULT_PROFILE_PHOTO);
+    }
 
     res.json({ mensagem: 'Barbeiro deletado com sucesso' });
   } catch (error) {

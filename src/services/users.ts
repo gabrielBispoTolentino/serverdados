@@ -54,6 +54,37 @@ const BASE_USER_SELECT = `
   LEFT JOIN usuarioBarber ub ON ub.usuario_id = u.id
 `;
 
+const ACTIVE_USER_CONDITION = `
+  (
+    ub.usuario_id IS NOT NULL
+    OR uc.usuario_id IS NOT NULL
+    OR ua.usuario_id IS NOT NULL
+  )
+`;
+
+function withActiveUsers(whereClause = '') {
+  const trimmed = whereClause.trim();
+
+  if (!trimmed) {
+    return `WHERE ${ACTIVE_USER_CONDITION}`;
+  }
+
+  if (/^where\b/i.test(trimmed)) {
+    const trailingClauseMatch = trimmed.match(/\b(GROUP\s+BY|ORDER\s+BY|LIMIT|OFFSET)\b/i);
+
+    if (!trailingClauseMatch || trailingClauseMatch.index === undefined) {
+      return `${trimmed} AND ${ACTIVE_USER_CONDITION}`;
+    }
+
+    const conditions = trimmed.slice(0, trailingClauseMatch.index).trimEnd();
+    const trailingClause = trimmed.slice(trailingClauseMatch.index);
+
+    return `${conditions} AND ${ACTIVE_USER_CONDITION} ${trailingClause}`;
+  }
+
+  return `WHERE ${ACTIVE_USER_CONDITION} ${trimmed}`;
+}
+
 export function parseUserRole(value: unknown): UserRole | null {
   if (value === CLIENT_ROLE || value === ESTABLISHMENT_ADMIN_ROLE || value === PLATFORM_ADMIN_ROLE) {
     return value;
@@ -100,7 +131,7 @@ export async function queryUsers(
   const [rows] = await pool.execute<UnifiedUser>(
     `
     ${BASE_USER_SELECT}
-    ${whereClause}
+    ${withActiveUsers(whereClause)}
   `,
     params,
   );
@@ -113,6 +144,7 @@ export async function resolveUserById(pool: DatabaseExecutor, id: string | numbe
     `
     ${BASE_USER_SELECT}
     WHERE u.id = ?
+      AND ${ACTIVE_USER_CONDITION}
     `,
     [id],
   );
