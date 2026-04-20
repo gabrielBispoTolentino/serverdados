@@ -222,7 +222,7 @@ router.post('/establishments', uploadEstablishment.single('foto'), async (req, r
       `
       INSERT INTO establishments
         (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
     `,
       [
         dono_id,
