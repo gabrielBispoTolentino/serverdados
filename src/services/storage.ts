@@ -18,6 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
   '';
 const PROFILE_BUCKET = process.env.SUPABASE_STORAGE_PROFILE_BUCKET || 'profile-photos';
 const ESTABLISHMENT_BUCKET = process.env.SUPABASE_STORAGE_ESTABLISHMENT_BUCKET || 'establishment-photos';
+const SIGNED_URL_TTL_SECONDS = Number(process.env.SUPABASE_STORAGE_SIGNED_URL_TTL || 60 * 60 * 24 * 365);
 
 let storageClient: SupabaseClient | null | undefined;
 
@@ -50,6 +51,11 @@ function getObjectPrefix(kind: StorageKind) {
   return kind === 'profile' ? 'profiles' : 'establishments';
 }
 
+function isMissingBucketError(message: string | undefined) {
+  const normalizedMessage = String(message || '').toLowerCase();
+  return normalizedMessage.includes('bucket not found');
+}
+
 function buildLocalAssetPath(kind: StorageKind, filename: string) {
   return `/uploads/${kind === 'profile' ? 'profile-photos' : 'establishment-photos'}/${filename}`;
 }
@@ -80,12 +86,40 @@ function isRemoteAssetUrl(assetUrl: string | null | undefined) {
 
 function extractObjectPath(assetUrl: string, bucketName: string) {
   const publicPrefix = `${SUPABASE_URL}/storage/v1/object/public/${bucketName}/`;
+  const signedPrefix = `${SUPABASE_URL}/storage/v1/object/sign/${bucketName}/`;
+  const normalizedUrl = assetUrl.split('?')[0];
+
   if (!assetUrl.startsWith(publicPrefix)) {
-    return null;
+    if (!assetUrl.startsWith(signedPrefix)) {
+      return null;
+    }
+
+    return decodeURIComponent(normalizedUrl.slice(signedPrefix.length));
   }
 
-  const normalizedUrl = assetUrl.split('?')[0];
   return decodeURIComponent(normalizedUrl.slice(publicPrefix.length));
+}
+
+async function buildRemoteAssetUrl(
+  client: SupabaseClient,
+  bucketName: string,
+  objectPath: string,
+) {
+  const { data, error } = await client.storage
+    .from(bucketName)
+    .createSignedUrl(objectPath, SIGNED_URL_TTL_SECONDS);
+
+  if (!error && data?.signedUrl) {
+    return data.signedUrl;
+  }
+
+  if (error) {
+    console.warn(
+      `Nao foi possivel gerar URL assinada para ${bucketName}/${objectPath}. Usando URL publica: ${error.message}`,
+    );
+  }
+
+  return client.storage.from(bucketName).getPublicUrl(objectPath).data.publicUrl;
 }
 
 async function uploadLocally(file: Express.Multer.File, kind: StorageKind) {
@@ -112,11 +146,17 @@ async function uploadToSupabase(file: Express.Multer.File, kind: StorageKind) {
   });
 
   if (error) {
+    if (isMissingBucketError(error.message)) {
+      console.warn(
+        `Bucket "${bucketName}" nao encontrado no Supabase Storage. Fazendo fallback para upload local.`,
+      );
+      return uploadLocally(file, kind);
+    }
+
     throw new Error(`Erro ao enviar imagem para o Supabase Storage: ${error.message}`);
   }
 
-  const { data } = client.storage.from(bucketName).getPublicUrl(objectPath);
-  return data.publicUrl;
+  return buildRemoteAssetUrl(client, bucketName, objectPath);
 }
 
 export async function uploadImageAsset(file: Express.Multer.File, kind: StorageKind) {
