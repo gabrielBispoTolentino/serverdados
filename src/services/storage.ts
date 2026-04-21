@@ -84,6 +84,14 @@ function isRemoteAssetUrl(assetUrl: string | null | undefined) {
   return /^https?:\/\//i.test(String(assetUrl || ''));
 }
 
+function isLocalAssetPath(assetUrl: string | null | undefined) {
+  return String(assetUrl || '').startsWith('/uploads/');
+}
+
+function isStorageObjectPath(assetUrl: string | null | undefined) {
+  return Boolean(assetUrl) && !isRemoteAssetUrl(assetUrl) && !isLocalAssetPath(assetUrl);
+}
+
 function extractObjectPath(assetUrl: string, bucketName: string) {
   const publicPrefix = `${SUPABASE_URL}/storage/v1/object/public/${bucketName}/`;
   const signedPrefix = `${SUPABASE_URL}/storage/v1/object/sign/${bucketName}/`;
@@ -139,15 +147,23 @@ async function uploadLocally(file: Express.Multer.File, kind: StorageKind) {
 }
 
 async function uploadToSupabase(file: Express.Multer.File, kind: StorageKind) {
+  const objectPath = `${getObjectPrefix(kind)}/${Date.now()}-${randomUUID()}${inferExtension(file)}`;
+  return uploadToSupabaseObject(file, kind, objectPath).then(({ assetUrl }) => assetUrl);
+}
+
+async function uploadToSupabaseObject(file: Express.Multer.File, kind: StorageKind, objectPath?: string) {
   const client = getStorageClient();
 
   if (!client) {
-    return uploadLocally(file, kind);
+    return {
+      assetUrl: await uploadLocally(file, kind),
+      objectPath: null,
+    };
   }
 
-  const objectPath = `${getObjectPrefix(kind)}/${Date.now()}-${randomUUID()}${inferExtension(file)}`;
+  const resolvedObjectPath = objectPath || `${getObjectPrefix(kind)}/${Date.now()}-${randomUUID()}${inferExtension(file)}`;
   const bucketName = getBucketName(kind);
-  const { error } = await client.storage.from(bucketName).upload(objectPath, file.buffer, {
+  const { error } = await client.storage.from(bucketName).upload(resolvedObjectPath, file.buffer, {
     contentType: file.mimetype,
     cacheControl: '3600',
     upsert: false,
@@ -158,17 +174,28 @@ async function uploadToSupabase(file: Express.Multer.File, kind: StorageKind) {
       console.warn(
         `Bucket "${bucketName}" nao encontrado no Supabase Storage. Fazendo fallback para upload local.`,
       );
-      return uploadLocally(file, kind);
+      return {
+        assetUrl: await uploadLocally(file, kind),
+        objectPath: null,
+      };
     }
 
     throw new Error(`Erro ao enviar imagem para o Supabase Storage: ${error.message}`);
   }
 
-  return buildRemoteAssetUrl(client, bucketName, objectPath);
+  return {
+    assetUrl: await buildRemoteAssetUrl(client, bucketName, resolvedObjectPath),
+    objectPath: resolvedObjectPath,
+  };
 }
 
 export async function uploadImageAsset(file: Express.Multer.File, kind: StorageKind) {
   return uploadToSupabase(file, kind);
+}
+
+export async function uploadImageAssetPath(file: Express.Multer.File, kind: StorageKind) {
+  const { assetUrl, objectPath } = await uploadToSupabaseObject(file, kind);
+  return objectPath || assetUrl;
 }
 
 export async function resolveImageAssetUrl(
@@ -176,6 +203,16 @@ export async function resolveImageAssetUrl(
   kind: StorageKind,
 ) {
   if (!assetUrl || !isRemoteAssetUrl(assetUrl)) {
+    if (isStorageObjectPath(assetUrl)) {
+      const client = getStorageClient();
+      if (!client) {
+        return assetUrl || null;
+      }
+
+      const bucketName = getBucketName(kind);
+      return (await buildSignedAssetUrl(client, bucketName, assetUrl)) || assetUrl;
+    }
+
     return assetUrl || null;
   }
 
@@ -202,7 +239,7 @@ export async function deleteImageAsset(
     return;
   }
 
-  if (!isRemoteAssetUrl(assetUrl)) {
+  if (isLocalAssetPath(assetUrl)) {
     safeUnlink(resolveAppPath(assetUrl));
     return;
   }
@@ -213,7 +250,7 @@ export async function deleteImageAsset(
   }
 
   const bucketName = getBucketName(kind);
-  const objectPath = extractObjectPath(assetUrl, bucketName);
+  const objectPath = isStorageObjectPath(assetUrl) ? assetUrl : extractObjectPath(assetUrl, bucketName);
   if (!objectPath) {
     return;
   }

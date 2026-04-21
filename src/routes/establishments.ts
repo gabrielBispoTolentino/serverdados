@@ -3,7 +3,7 @@ import { DEFAULT_ESTABLISHMENT_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadEstablishment } from '../config/uploads';
 import { findAdminById } from '../services/users';
-import { deleteImageAsset, resolveImageAssetUrl, uploadImageAsset } from '../services/storage';
+import { deleteImageAsset, resolveImageAssetUrl, uploadImageAssetPath } from '../services/storage';
 
 const router = express.Router();
 const ESTABLISHMENT_UPLOAD_FIELD_NAMES = ['fotos', 'foto'] as const;
@@ -11,39 +11,20 @@ const uploadEstablishmentImages = uploadEstablishment.fields([
   { name: 'fotos', maxCount: 10 },
   { name: 'foto', maxCount: 1 },
 ]);
-let ensureEstablishmentImagesColumnPromise: Promise<void> | null = null;
 
-function isMissingColumnError(error: unknown) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === '42703'
-  );
-}
+type EstablishmentImageRow = {
+  id: number;
+  establishment_id: number;
+  storage_path: string;
+  sort_order: number;
+  is_cover: boolean;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-async function ensureEstablishmentImagesColumn() {
-  if (!ensureEstablishmentImagesColumnPromise) {
-    ensureEstablishmentImagesColumnPromise = pool
-      .query(`
-        ALTER TABLE establishments
-        ADD COLUMN IF NOT EXISTS imagem_urls JSONB NOT NULL DEFAULT '[]'::jsonb
-      `)
-      .then(() => undefined)
-      .catch((error) => {
-        ensureEstablishmentImagesColumnPromise = null;
-        throw error;
-      });
-  }
-
-  await ensureEstablishmentImagesColumnPromise;
-}
-
-function normalizeImageUrlList(value: unknown): string[] {
+function normalizeStoragePathList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return Array.from(
       new Set(
@@ -63,7 +44,7 @@ function normalizeImageUrlList(value: unknown): string[] {
 
     if (trimmedValue.startsWith('[')) {
       try {
-        return normalizeImageUrlList(JSON.parse(trimmedValue));
+        return normalizeStoragePathList(JSON.parse(trimmedValue));
       } catch {
         return [];
       }
@@ -75,61 +56,69 @@ function normalizeImageUrlList(value: unknown): string[] {
   return [];
 }
 
-function buildEstablishmentImageUrls(establishment: {
-  imagem_url?: unknown;
-  imagem_urls?: unknown;
-}) {
-  const imageUrls = normalizeImageUrlList(establishment.imagem_urls);
-
-  if (imageUrls.length > 0) {
-    return imageUrls;
-  }
-
-  if (typeof establishment.imagem_url === 'string' && establishment.imagem_url.trim()) {
-    return [establishment.imagem_url.trim()];
-  }
-
-  return [];
-}
-
 function getPrimaryEstablishmentImageUrl(imageUrls: string[]) {
   return imageUrls[0] || DEFAULT_ESTABLISHMENT_PHOTO;
 }
 
-function serializeImageUrls(imageUrls: string[]) {
-  return JSON.stringify(imageUrls);
+function getPrimaryEstablishmentImagePath(imagePaths: string[]) {
+  return imagePaths[0] || DEFAULT_ESTABLISHMENT_PHOTO;
 }
 
-function formatEstablishmentRecord<T extends Record<string, unknown>>(establishment: T) {
-  const imageUrls = buildEstablishmentImageUrls(establishment);
-  const primaryImageUrl = getPrimaryEstablishmentImageUrl(imageUrls);
+async function getEstablishmentImagesByIds(establishmentIds: Array<number | string>) {
+  const normalizedIds = Array.from(
+    new Set(
+      establishmentIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  );
 
-  return {
-    ...establishment,
-    imagem_url: primaryImageUrl,
-    imagem_urls: imageUrls,
-  };
+  const imageMap = new Map<number, EstablishmentImageRow[]>();
+
+  if (normalizedIds.length === 0) {
+    return imageMap;
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const [rows] = await pool.execute<EstablishmentImageRow>(
+    `
+    SELECT id, establishment_id, storage_path, sort_order, is_cover
+    FROM establishment_images
+    WHERE establishment_id IN (${placeholders})
+    ORDER BY establishment_id ASC, is_cover DESC, sort_order ASC, id ASC
+  `,
+    normalizedIds,
+  );
+
+  rows.forEach((row) => {
+    const currentRows = imageMap.get(row.establishment_id) || [];
+    currentRows.push(row);
+    imageMap.set(row.establishment_id, currentRows);
+  });
+
+  return imageMap;
 }
 
-async function resolveEstablishmentImageUrls(imageUrls: string[]) {
+async function resolveEstablishmentImageUrls(imagePaths: string[]) {
   return Promise.all(
-    imageUrls.map((imageUrl) => resolveImageAssetUrl(imageUrl, 'establishment')),
+    imagePaths.map((imagePath) => resolveImageAssetUrl(imagePath, 'establishment')),
   ).then((resolvedImageUrls) =>
     resolvedImageUrls.filter((imageUrl): imageUrl is string => typeof imageUrl === 'string' && Boolean(imageUrl)),
   );
 }
 
-async function formatEstablishmentRecordForResponse<T extends Record<string, unknown>>(establishment: T) {
-  const formattedEstablishment = formatEstablishmentRecord(establishment);
-  const resolvedImageUrls = await resolveEstablishmentImageUrls(
-    buildEstablishmentImageUrls(formattedEstablishment),
-  );
+async function buildEstablishmentImageResponse(imagePaths: string[]) {
+  const resolvedImageUrls = await resolveEstablishmentImageUrls(imagePaths);
   const primaryImageUrl = getPrimaryEstablishmentImageUrl(resolvedImageUrls);
 
   return {
-    ...formattedEstablishment,
     imagem_url: primaryImageUrl,
     imagem_urls: resolvedImageUrls,
+    imagem_paths: imagePaths,
+    imageUrl: primaryImageUrl,
+    imageUrls: resolvedImageUrls,
+    imagePaths: imagePaths,
+    img: primaryImageUrl,
   };
 }
 
@@ -161,109 +150,141 @@ function getUploadedEstablishmentFiles(req: express.Request) {
   return files;
 }
 
-function parseRequestedExistingImageUrls(value: unknown) {
+function parseRequestedExistingImagePaths(value: unknown) {
   if (value === undefined) {
     return null;
   }
 
-  return normalizeImageUrlList(value);
+  return normalizeStoragePathList(value);
 }
 
-async function deleteEstablishmentImageGallery(imageUrls: string[]) {
-  const uniqueImageUrls = Array.from(new Set(imageUrls));
+async function deleteEstablishmentImageGallery(imagePaths: string[]) {
+  const uniqueImagePaths = Array.from(new Set(imagePaths));
 
   await Promise.all(
-    uniqueImageUrls.map((imageUrl) =>
-      deleteImageAsset(imageUrl, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO),
+    uniqueImagePaths.map((imagePath) =>
+      deleteImageAsset(imagePath, 'establishment', DEFAULT_ESTABLISHMENT_PHOTO),
     ),
   );
 }
 
 async function uploadEstablishmentImageGallery(files: Express.Multer.File[]) {
-  const uploadedImageUrls: string[] = [];
+  const uploadedImagePaths: string[] = [];
 
   for (const file of files) {
-    uploadedImageUrls.push(await uploadImageAsset(file, 'establishment'));
+    uploadedImagePaths.push(await uploadImageAssetPath(file, 'establishment'));
   }
 
-  return uploadedImageUrls;
+  return uploadedImagePaths;
+}
+
+async function syncEstablishmentImages(
+  establishmentId: number | string,
+  nextImagePaths: string[],
+) {
+  const [currentRows] = await pool.execute<EstablishmentImageRow>(
+    `
+    SELECT id, establishment_id, storage_path, sort_order, is_cover
+    FROM establishment_images
+    WHERE establishment_id = ?
+    ORDER BY is_cover DESC, sort_order ASC, id ASC
+  `,
+    [establishmentId],
+  );
+
+  const currentRowsByPath = new Map(currentRows.map((row) => [row.storage_path, row]));
+  const nextImagePathSet = new Set(nextImagePaths);
+
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    for (const row of currentRows) {
+      if (!nextImagePathSet.has(row.storage_path)) {
+        await connection.execute('DELETE FROM establishment_images WHERE id = ?', [row.id]);
+      }
+    }
+
+    for (const [index, imagePath] of nextImagePaths.entries()) {
+      const existingRow = currentRowsByPath.get(imagePath);
+      const isCover = index === 0;
+
+      if (existingRow) {
+        await connection.execute(
+          `
+          UPDATE establishment_images
+          SET sort_order = ?, is_cover = ?, updated_em = NOW()
+          WHERE id = ?
+        `,
+          [index, isCover, existingRow.id],
+        );
+        continue;
+      }
+
+      await connection.execute(
+        `
+        INSERT INTO establishment_images (establishment_id, storage_path, sort_order, is_cover)
+        VALUES (?, ?, ?, ?)
+      `,
+        [establishmentId, imagePath, index, isCover],
+      );
+    }
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 router.get('/establishments', async (req, res) => {
   try {
-    await ensureEstablishmentImagesColumn();
-
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 5;
     const offset = (page - 1) * limit;
 
-    let establishments;
+    const [establishments] = await pool.query(`
+      SELECT
+        id,
+        dono_id,
+        nome AS name,
+        description,
+        rua,
+        cidade,
+        TRIM(CONCAT(COALESCE(rua, ''), CASE WHEN cidade IS NOT NULL AND cidade <> '' THEN ', ' || cidade ELSE '' END, CASE WHEN stado IS NOT NULL AND stado <> '' THEN ' - ' || stado ELSE '' END)) AS address,
+        stado,
+        pais,
+        cep,
+        phone,
+        rating_avg,
+        rating_count,
+        mei,
+        criado_em,
+        updated_em,
+        deletedo_em,
+        latitude,
+        longitude,
+        google_maps_url,
+        location_verified
+      FROM establishments
+      WHERE deletedo_em IS NULL
+      ORDER BY rating_avg DESC, nome ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
 
-    try {
-      [establishments] = await pool.query(`
-        SELECT
-          id,
-          dono_id,
-          nome AS name,
-          description,
-          rua,
-          cidade,
-          TRIM(CONCAT(COALESCE(rua, ''), CASE WHEN cidade IS NOT NULL AND cidade <> '' THEN ', ' || cidade ELSE '' END, CASE WHEN stado IS NOT NULL AND stado <> '' THEN ' - ' || stado ELSE '' END)) AS address,
-          stado,
-          pais,
-          cep,
-          phone,
-          rating_avg,
-          rating_count,
-          mei,
-          criado_em,
-          updated_em,
-          deletedo_em,
-          imagem_url,
-          imagem_urls,
-          latitude,
-          longitude,
-          google_maps_url,
-          location_verified
-        FROM establishments
-        WHERE deletedo_em IS NULL
-        ORDER BY rating_avg DESC, nome ASC
-        LIMIT ${limit} OFFSET ${offset}
-      `);
-    } catch (error) {
-      if (!isMissingColumnError(error)) {
-        throw error;
-      }
+    const imageMap = await getEstablishmentImagesByIds(establishments.map((establishment) => establishment.id));
 
-      [establishments] = await pool.query(`
-        SELECT
-          id,
-          dono_id,
-          nome AS name,
-          description,
-          rua,
-          cidade,
-          TRIM(CONCAT(COALESCE(rua, ''), CASE WHEN cidade IS NOT NULL AND cidade <> '' THEN ', ' || cidade ELSE '' END, CASE WHEN stado IS NOT NULL AND stado <> '' THEN ' - ' || stado ELSE '' END)) AS address,
-          stado,
-          pais,
-          cep,
-          phone,
-          rating_avg,
-          rating_count,
-          mei,
-          criado_em,
-          updated_em,
-          deletedo_em,
-          imagem_url,
-          imagem_urls
-        FROM establishments
-        WHERE deletedo_em IS NULL
-        ORDER BY rating_avg DESC, nome ASC
-        LIMIT ${limit} OFFSET ${offset}
-      `);
-    }
-
-    res.json(await Promise.all(establishments.map((establishment) => formatEstablishmentRecordForResponse(establishment))));
+    res.json(await Promise.all(
+      establishments.map(async (establishment) => ({
+        ...establishment,
+        ...(await buildEstablishmentImageResponse(
+          (imageMap.get(Number(establishment.id)) || []).map((image) => image.storage_path),
+        )),
+      })),
+    ));
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao buscar estabelecimentos' });
@@ -272,88 +293,47 @@ router.get('/establishments', async (req, res) => {
 
 router.get('/establishments/:id', async (req, res) => {
   try {
-    await ensureEstablishmentImagesColumn();
-
-    let establishments;
-
-    try {
-      [establishments] = await pool.execute(
-        `
-        SELECT
-          id,
-          dono_id,
-          nome AS name,
-          description,
-          rua,
-          cidade,
-          stado,
-          pais,
-          cep,
-          phone,
-          rating_avg,
-          rating_count,
-          mei,
-          criado_em,
-          updated_em,
-          imagem_url,
-          imagem_urls,
-          latitude,
-          longitude,
-          google_maps_url,
-          location_verified
-        FROM establishments
-        WHERE id = ? AND deletedo_em IS NULL
-      `,
-        [req.params.id],
-      );
-    } catch (error) {
-      if (!isMissingColumnError(error)) {
-        throw error;
-      }
-
-      [establishments] = await pool.execute(
-        `
-        SELECT
-          id,
-          dono_id,
-          nome AS name,
-          description,
-          rua,
-          cidade,
-          stado,
-          pais,
-          cep,
-          phone,
-          rating_avg,
-          rating_count,
-          mei,
-          criado_em,
-          updated_em,
-          imagem_url,
-          imagem_urls
-        FROM establishments
-        WHERE id = ? AND deletedo_em IS NULL
-      `,
-        [req.params.id],
-      );
-    }
+    const [establishments] = await pool.execute(
+      `
+      SELECT
+        id,
+        dono_id,
+        nome AS name,
+        description,
+        rua,
+        cidade,
+        stado,
+        pais,
+        cep,
+        phone,
+        rating_avg,
+        rating_count,
+        mei,
+        criado_em,
+        updated_em,
+        latitude,
+        longitude,
+        google_maps_url,
+        location_verified
+      FROM establishments
+      WHERE id = ? AND deletedo_em IS NULL
+    `,
+      [req.params.id],
+    );
 
     if (establishments.length === 0) {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const est = await formatEstablishmentRecordForResponse(establishments[0]);
-    const imageUrls = buildEstablishmentImageUrls(est);
-    const primaryImageUrl = getPrimaryEstablishmentImageUrl(imageUrls);
+    const imageMap = await getEstablishmentImagesByIds([req.params.id]);
+    const imagePaths = (imageMap.get(Number(req.params.id)) || []).map((image) => image.storage_path);
+    const imageResponse = await buildEstablishmentImageResponse(imagePaths);
+    const est = establishments[0];
 
     res.json({
       id: est.id,
       name: est.name,
-      img: primaryImageUrl,
-      imagem_url: primaryImageUrl,
-      imageUrl: primaryImageUrl,
-      imagem_urls: imageUrls,
-      imageUrls,
+      ...imageResponse,
       address: `${est.rua}, ${est.cidade} - ${est.stado}`,
       rating: est.rating_avg || 0,
       description: est.description,
@@ -379,11 +359,9 @@ router.get('/establishments/:id', async (req, res) => {
 });
 
 router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
-  let uploadedImageUrls: string[] = [];
+  let uploadedImagePaths: string[] = [];
 
   try {
-    await ensureEstablishmentImagesColumn();
-
     const { dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
     const uploadedFiles = getUploadedEstablishmentFiles(req);
 
@@ -399,17 +377,16 @@ router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
       return res.status(404).json({ erro: 'Administrador responsavel nao encontrado' });
     }
 
-    uploadedImageUrls = await uploadEstablishmentImageGallery(uploadedFiles);
-    const imageUrls = uploadedImageUrls;
-    const imagemUrl = getPrimaryEstablishmentImageUrl(imageUrls);
+    uploadedImagePaths = await uploadEstablishmentImageGallery(uploadedFiles);
+    const imagePath = getPrimaryEstablishmentImagePath(uploadedImagePaths);
 
     const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
 
     const [, result] = await pool.execute(
       `
       INSERT INTO establishments
-        (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url, imagem_urls)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?::jsonb)
+        (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
     `,
       [
         dono_id,
@@ -422,34 +399,36 @@ router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
         cep,
         phone || null,
         Number.isNaN(meiTratado) ? 0 : meiTratado,
-        imagemUrl,
-        serializeImageUrls(imageUrls),
+        imagePath,
       ],
     );
+
+    if (result.insertId && uploadedImagePaths.length > 0) {
+      await syncEstablishmentImages(result.insertId, uploadedImagePaths);
+    }
+
+    const imageResponse = await buildEstablishmentImageResponse(uploadedImagePaths);
 
     res.status(201).json({
       mensagem: 'Estabelecimento criado com sucesso',
       id: result.insertId,
-      imagemUrl: await resolveImageAssetUrl(imagemUrl, 'establishment'),
-      imagem_url: await resolveImageAssetUrl(imagemUrl, 'establishment'),
-      imagem_urls: await resolveEstablishmentImageUrls(imageUrls),
+      imagemUrl: imageResponse.imagem_url,
+      ...imageResponse,
     });
-    uploadedImageUrls = [];
+    uploadedImagePaths = [];
   } catch (error) {
     console.error(error);
-    if (uploadedImageUrls.length > 0) {
-      await deleteEstablishmentImageGallery(uploadedImageUrls);
+    if (uploadedImagePaths.length > 0) {
+      await deleteEstablishmentImageGallery(uploadedImagePaths);
     }
     res.status(500).json({ erro: 'Erro ao criar estabelecimento' });
   }
 });
 
 router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) => {
-  let uploadedImageUrls: string[] = [];
+  let uploadedImagePaths: string[] = [];
 
   try {
-    await ensureEstablishmentImagesColumn();
-
     const id = String(req.params.id);
     const { nome, description, rua, cidade, stado, pais, cep, phone, mei } = req.body;
     const uploadedFiles = getUploadedEstablishmentFiles(req);
@@ -457,7 +436,7 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
     const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
 
     const [estabelecimentoAtual] = await pool.execute(
-      'SELECT imagem_url, imagem_urls FROM establishments WHERE id = ? AND deletedo_em IS NULL',
+      'SELECT id FROM establishments WHERE id = ? AND deletedo_em IS NULL',
       [id],
     );
 
@@ -465,21 +444,22 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const currentImageUrls = buildEstablishmentImageUrls(estabelecimentoAtual[0]);
-    const requestedExistingImageUrls = parseRequestedExistingImageUrls(req.body.existing_imagem_urls);
-    const keptImageUrls = requestedExistingImageUrls
-      ? currentImageUrls.filter((imageUrl) => requestedExistingImageUrls.includes(imageUrl))
-      : currentImageUrls;
+    const imageMap = await getEstablishmentImagesByIds([id]);
+    const currentImagePaths = (imageMap.get(Number(id)) || []).map((image) => image.storage_path);
+    const requestedExistingImagePaths = parseRequestedExistingImagePaths(req.body.existing_imagem_urls);
+    const keptImagePaths = requestedExistingImagePaths
+      ? currentImagePaths.filter((imagePath) => requestedExistingImagePaths.includes(imagePath))
+      : currentImagePaths;
 
-    uploadedImageUrls = await uploadEstablishmentImageGallery(uploadedFiles);
+    uploadedImagePaths = await uploadEstablishmentImageGallery(uploadedFiles);
 
-    const nextImageUrls = [...keptImageUrls, ...uploadedImageUrls];
-    const imagemUrl = getPrimaryEstablishmentImageUrl(nextImageUrls);
+    const nextImagePaths = [...keptImagePaths, ...uploadedImagePaths];
+    const imagePath = getPrimaryEstablishmentImagePath(nextImagePaths);
 
     const [, result] = await pool.execute(
       `
       UPDATE establishments
-      SET nome = ?, description = ?, rua = ?, cidade = ?, stado = ?, pais = ?, cep = ?, phone = ?, mei = ?, imagem_url = ?, imagem_urls = ?::jsonb, updated_em = NOW()
+      SET nome = ?, description = ?, rua = ?, cidade = ?, stado = ?, pais = ?, cep = ?, phone = ?, mei = ?, imagem_url = ?, updated_em = NOW()
       WHERE id = ? AND deletedo_em IS NULL
     `,
       [
@@ -492,35 +472,36 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
         cep,
         phone,
         Number.isNaN(meiTratado) ? 0 : meiTratado,
-        imagemUrl,
-        serializeImageUrls(nextImageUrls),
+        imagePath,
         id,
       ],
     );
 
     if (result.affectedRows === 0) {
-      if (uploadedImageUrls.length > 0) {
-        await deleteEstablishmentImageGallery(uploadedImageUrls);
-        uploadedImageUrls = [];
+      if (uploadedImagePaths.length > 0) {
+        await deleteEstablishmentImageGallery(uploadedImagePaths);
+        uploadedImagePaths = [];
       }
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const removedImageUrls = currentImageUrls.filter((imageUrl) => !keptImageUrls.includes(imageUrl));
-    await deleteEstablishmentImageGallery(removedImageUrls);
+    await syncEstablishmentImages(id, nextImagePaths);
 
-    uploadedImageUrls = [];
+    const removedImagePaths = currentImagePaths.filter((imagePath) => !keptImagePaths.includes(imagePath));
+    await deleteEstablishmentImageGallery(removedImagePaths);
+
+    uploadedImagePaths = [];
+    const imageResponse = await buildEstablishmentImageResponse(nextImagePaths);
 
     res.json({
       mensagem: 'Estabelecimento atualizado com sucesso',
-      imagemUrl: await resolveImageAssetUrl(imagemUrl, 'establishment'),
-      imagem_url: await resolveImageAssetUrl(imagemUrl, 'establishment'),
-      imagem_urls: await resolveEstablishmentImageUrls(nextImageUrls),
+      imagemUrl: imageResponse.imagem_url,
+      ...imageResponse,
     });
   } catch (error) {
     console.error(error);
-    if (uploadedImageUrls.length > 0) {
-      await deleteEstablishmentImageGallery(uploadedImageUrls);
+    if (uploadedImagePaths.length > 0) {
+      await deleteEstablishmentImageGallery(uploadedImagePaths);
     }
     res.status(500).json({ erro: 'Erro ao atualizar estabelecimento' });
   }
@@ -528,14 +509,9 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
 
 router.delete('/establishments/:id', async (req, res) => {
   try {
-    await ensureEstablishmentImagesColumn();
-
     const id = String(req.params.id);
-
-    const [estabelecimento] = await pool.execute(
-      'SELECT imagem_url, imagem_urls FROM establishments WHERE id = ? AND deletedo_em IS NULL',
-      [id],
-    );
+    const imageMap = await getEstablishmentImagesByIds([id]);
+    const currentImagePaths = (imageMap.get(Number(id)) || []).map((image) => image.storage_path);
 
     const [, result] = await pool.execute(
       'UPDATE establishments SET deletedo_em = NOW() WHERE id = ? AND deletedo_em IS NULL',
@@ -546,8 +522,9 @@ router.delete('/establishments/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    if (estabelecimento.length > 0) {
-      await deleteEstablishmentImageGallery(buildEstablishmentImageUrls(estabelecimento[0]));
+    if (currentImagePaths.length > 0) {
+      await deleteEstablishmentImageGallery(currentImagePaths);
+      await pool.execute('DELETE FROM establishment_images WHERE establishment_id = ?', [id]);
     }
 
     res.json({ mensagem: 'Estabelecimento deletado com sucesso' });
