@@ -112,13 +112,9 @@ async function buildEstablishmentImageResponse(imagePaths: string[]) {
   const primaryImageUrl = getPrimaryEstablishmentImageUrl(resolvedImageUrls);
 
   return {
-    imagem_url: primaryImageUrl,
-    imagem_urls: resolvedImageUrls,
-    imagem_paths: imagePaths,
     imageUrl: primaryImageUrl,
     imageUrls: resolvedImageUrls,
-    imagePaths: imagePaths,
-    img: primaryImageUrl,
+    imagePaths,
   };
 }
 
@@ -412,7 +408,6 @@ router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
     res.status(201).json({
       mensagem: 'Estabelecimento criado com sucesso',
       id: result.insertId,
-      imagemUrl: imageResponse.imagem_url,
       ...imageResponse,
     });
     uploadedImagePaths = [];
@@ -446,7 +441,7 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
 
     const imageMap = await getEstablishmentImagesByIds([id]);
     const currentImagePaths = (imageMap.get(Number(id)) || []).map((image) => image.storage_path);
-    const requestedExistingImagePaths = parseRequestedExistingImagePaths(req.body.existing_imagem_urls);
+    const requestedExistingImagePaths = parseRequestedExistingImagePaths(req.body.existing_image_paths);
     const keptImagePaths = requestedExistingImagePaths
       ? currentImagePaths.filter((imagePath) => requestedExistingImagePaths.includes(imagePath))
       : currentImagePaths;
@@ -495,7 +490,6 @@ router.put('/establishments/:id', uploadEstablishmentImages, async (req, res) =>
 
     res.json({
       mensagem: 'Estabelecimento atualizado com sucesso',
-      imagemUrl: imageResponse.imagem_url,
       ...imageResponse,
     });
   } catch (error) {
