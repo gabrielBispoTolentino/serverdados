@@ -13,10 +13,10 @@ const uploadEstablishmentImages = uploadEstablishment.fields([
 ]);
 
 type EstablishmentImageRow = {
-  id: number;
-  establishment_id: number;
+  id: number | string;
+  establishment_id: number | string;
   storage_path: string;
-  sort_order: number;
+  sort_order: number | string;
   is_cover: boolean;
 };
 
@@ -91,9 +91,10 @@ async function getEstablishmentImagesByIds(establishmentIds: Array<number | stri
   );
 
   rows.forEach((row) => {
-    const currentRows = imageMap.get(row.establishment_id) || [];
+    const establishmentId = Number(row.establishment_id);
+    const currentRows = imageMap.get(establishmentId) || [];
     currentRows.push(row);
-    imageMap.set(row.establishment_id, currentRows);
+    imageMap.set(establishmentId, currentRows);
   });
 
   return imageMap;
@@ -233,9 +234,17 @@ async function syncEstablishmentImages(
       }
     }
 
+    await connection.execute(
+      `
+      UPDATE establishment_images
+      SET is_cover = FALSE, updated_em = NOW()
+      WHERE establishment_id = ?
+    `,
+      [establishmentId],
+    );
+
     for (const [index, imagePath] of nextImagePaths.entries()) {
       const existingRow = currentRowsByPath.get(imagePath);
-      const isCover = index === 0;
 
       if (existingRow) {
         await connection.execute(
@@ -244,7 +253,7 @@ async function syncEstablishmentImages(
           SET sort_order = ?, is_cover = ?, updated_em = NOW()
           WHERE id = ?
         `,
-          [index, isCover, existingRow.id],
+          [index, false, existingRow.id],
         );
         continue;
       }
@@ -254,7 +263,18 @@ async function syncEstablishmentImages(
         INSERT INTO establishment_images (establishment_id, storage_path, sort_order, is_cover)
         VALUES (?, ?, ?, ?)
       `,
-        [establishmentId, imagePath, index, isCover],
+        [establishmentId, imagePath, index, false],
+      );
+    }
+
+    if (nextImagePaths[0]) {
+      await connection.execute(
+        `
+        UPDATE establishment_images
+        SET is_cover = TRUE, updated_em = NOW()
+        WHERE establishment_id = ? AND storage_path = ?
+      `,
+        [establishmentId, nextImagePaths[0]],
       );
     }
 
