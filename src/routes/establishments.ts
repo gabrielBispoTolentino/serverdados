@@ -118,6 +118,37 @@ async function buildEstablishmentImageResponse(imagePaths: string[]) {
   };
 }
 
+async function formatEstablishmentForResponse(
+  establishment: Record<string, unknown>,
+  imagePaths: string[],
+) {
+  const imageResponse = await buildEstablishmentImageResponse(imagePaths);
+
+  return {
+    id: establishment.id,
+    dono_id: establishment.dono_id,
+    name: establishment.name,
+    description: establishment.description ?? null,
+    address: establishment.address ?? null,
+    phone: establishment.phone ?? null,
+    mei: establishment.mei ?? null,
+    rating: establishment.rating_avg ?? 0,
+    ratingCount: establishment.rating_count ?? 0,
+    latitude: establishment.latitude ?? null,
+    longitude: establishment.longitude ?? null,
+    googleMapsUrl: establishment.google_maps_url ?? null,
+    locationVerified: establishment.location_verified ?? null,
+    fullAddress: {
+      rua: establishment.rua ?? '',
+      cidade: establishment.cidade ?? '',
+      estado: establishment.stado ?? '',
+      pais: establishment.pais ?? 'Brasil',
+      cep: establishment.cep ?? '',
+    },
+    ...imageResponse,
+  };
+}
+
 function getUploadedEstablishmentFiles(req: express.Request) {
   const files: Express.Multer.File[] = [];
 
@@ -274,12 +305,12 @@ router.get('/establishments', async (req, res) => {
     const imageMap = await getEstablishmentImagesByIds(establishments.map((establishment) => establishment.id));
 
     res.json(await Promise.all(
-      establishments.map(async (establishment) => ({
-        ...establishment,
-        ...(await buildEstablishmentImageResponse(
+      establishments.map((establishment) =>
+        formatEstablishmentForResponse(
+          establishment,
           (imageMap.get(Number(establishment.id)) || []).map((image) => image.storage_path),
-        )),
-      })),
+        ),
+      ),
     ));
   } catch (error) {
     console.error(error);
@@ -322,32 +353,17 @@ router.get('/establishments/:id', async (req, res) => {
     }
 
     const imageMap = await getEstablishmentImagesByIds([req.params.id]);
-    const imagePaths = (imageMap.get(Number(req.params.id)) || []).map((image) => image.storage_path);
-    const imageResponse = await buildEstablishmentImageResponse(imagePaths);
     const est = establishments[0];
 
-    res.json({
-      id: est.id,
-      name: est.name,
-      ...imageResponse,
-      address: `${est.rua}, ${est.cidade} - ${est.stado}`,
-      rating: est.rating_avg || 0,
-      description: est.description,
-      phone: est.phone,
-      ratingCount: est.rating_count || 0,
-      latitude: est.latitude ?? null,
-      longitude: est.longitude ?? null,
-      google_maps_url: est.google_maps_url ?? null,
-      google_maps_embed_url: est.google_maps_embed_url ?? null,
-      location_verified: est.location_verified ?? null,
-      fullAddress: {
-        rua: est.rua,
-        cidade: est.cidade,
-        estado: est.stado,
-        pais: est.pais,
-        cep: est.cep,
-      },
-    });
+    res.json(
+      await formatEstablishmentForResponse(
+        {
+          ...est,
+          address: `${est.rua}, ${est.cidade} - ${est.stado}`,
+        },
+        (imageMap.get(Number(req.params.id)) || []).map((image) => image.storage_path),
+      ),
+    );
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao buscar estabelecimento' });
