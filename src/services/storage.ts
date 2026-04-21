@@ -18,7 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
   '';
 const PROFILE_BUCKET = process.env.SUPABASE_STORAGE_PROFILE_BUCKET || 'profile-photos';
 const ESTABLISHMENT_BUCKET = process.env.SUPABASE_STORAGE_ESTABLISHMENT_BUCKET || 'establishment-photos';
-const SIGNED_URL_TTL_SECONDS = Number(process.env.SUPABASE_STORAGE_SIGNED_URL_TTL || 60 * 60 * 24 * 365);
+const SIGNED_URL_TTL_SECONDS = Number(process.env.SUPABASE_STORAGE_SIGNED_URL_TTL || 60 * 60 * 24 * 7);
 
 let storageClient: SupabaseClient | null | undefined;
 
@@ -105,6 +105,14 @@ async function buildRemoteAssetUrl(
   bucketName: string,
   objectPath: string,
 ) {
+  return client.storage.from(bucketName).getPublicUrl(objectPath).data.publicUrl;
+}
+
+async function buildSignedAssetUrl(
+  client: SupabaseClient,
+  bucketName: string,
+  objectPath: string,
+) {
   const { data, error } = await client.storage
     .from(bucketName)
     .createSignedUrl(objectPath, SIGNED_URL_TTL_SECONDS);
@@ -115,11 +123,11 @@ async function buildRemoteAssetUrl(
 
   if (error) {
     console.warn(
-      `Nao foi possivel gerar URL assinada para ${bucketName}/${objectPath}. Usando URL publica: ${error.message}`,
+      `Nao foi possivel gerar URL assinada para ${bucketName}/${objectPath}. Usando referencia original: ${error.message}`,
     );
   }
 
-  return client.storage.from(bucketName).getPublicUrl(objectPath).data.publicUrl;
+  return null;
 }
 
 async function uploadLocally(file: Express.Multer.File, kind: StorageKind) {
@@ -161,6 +169,28 @@ async function uploadToSupabase(file: Express.Multer.File, kind: StorageKind) {
 
 export async function uploadImageAsset(file: Express.Multer.File, kind: StorageKind) {
   return uploadToSupabase(file, kind);
+}
+
+export async function resolveImageAssetUrl(
+  assetUrl: string | null | undefined,
+  kind: StorageKind,
+) {
+  if (!assetUrl || !isRemoteAssetUrl(assetUrl)) {
+    return assetUrl || null;
+  }
+
+  const client = getStorageClient();
+  if (!client) {
+    return assetUrl;
+  }
+
+  const bucketName = getBucketName(kind);
+  const objectPath = extractObjectPath(assetUrl, bucketName);
+  if (!objectPath) {
+    return assetUrl;
+  }
+
+  return (await buildSignedAssetUrl(client, bucketName, objectPath)) || assetUrl;
 }
 
 export async function deleteImageAsset(
