@@ -7,6 +7,7 @@ import {
   BARBER_SUBTYPE_TABLE,
   CLIENT_ROLE,
   ESTABLISHMENT_ADMIN_ROLE,
+  findAdminByCnpj,
   findUsersByEmailOrCpf,
   findUsersByLogin,
   formatUser,
@@ -24,6 +25,43 @@ function generateBarberVerifyCode() {
   return randomBytes(4).toString('hex').toUpperCase();
 }
 
+type BarbershopPlanTypeRow = {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  price: number | string;
+  billing_cycle: string;
+  max_barbers: number | null;
+  max_establishments: number;
+  active: boolean;
+  sort_order: number;
+};
+
+async function resolveActiveBarbershopPlanType(planId: number) {
+  const [rows] = await pool.execute<BarbershopPlanTypeRow>(
+    `
+    SELECT
+      id,
+      code,
+      name,
+      description,
+      price,
+      billing_cycle,
+      max_barbers,
+      max_establishments,
+      active,
+      sort_order
+    FROM barbershop_plan_types
+    WHERE id = ? AND active = TRUE
+    LIMIT 1
+    `,
+    [planId],
+  );
+
+  return rows[0] ?? null;
+}
+
 async function resolveOwnedEstablishment(establishmentId: string, adminUserId: string) {
   const [rows] = await pool.execute(
     `
@@ -37,21 +75,86 @@ async function resolveOwnedEstablishment(establishmentId: string, adminUserId: s
   return rows[0] ?? null;
 }
 
+function isPgErrorWithCode(
+  error: unknown,
+  code: string,
+): error is { code: string; constraint?: string; detail?: string } {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === code;
+}
+
+router.get('/barbershop-plan-types', async (_req, res) => {
+  try {
+    const [rows] = await pool.execute<BarbershopPlanTypeRow>(
+      `
+      SELECT
+        id,
+        code,
+        name,
+        description,
+        price,
+        billing_cycle,
+        max_barbers,
+        max_establishments,
+        active,
+        sort_order
+      FROM barbershop_plan_types
+      WHERE active = TRUE
+      ORDER BY sort_order ASC, price ASC, name ASC
+      `,
+    );
+
+    res.json(
+      rows.map((plan) => ({
+        id: plan.id,
+        code: plan.code,
+        name: plan.name,
+        description: plan.description,
+        price: Number(plan.price),
+        billingCycle: plan.billing_cycle,
+        maxBarbers: plan.max_barbers,
+        maxEstablishments: plan.max_establishments,
+      })),
+    );
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao buscar planos de conta da barbearia' });
+  }
+});
+
 router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
   let fotoUrlParaLimpeza: string | null = null;
 
   try {
-    const { nome, email, senha, cpf, telefone, role, cnpj } = req.body;
+    const { nome, email, senha, cpf, telefone, role, cnpj, barbershop_plan_id } = req.body;
     const parsedRole = parseUserRole(role);
+    const normalizedCnpj = typeof cnpj === 'string' ? cnpj.trim() : '';
 
     if (!nome || !email || !senha || !cpf || !telefone || !parsedRole) {
       safeUnlink(req.file?.path);
       return res.status(400).json({ erro: 'Todos os campos sao obrigatorios' });
     }
 
-    if (parsedRole === ESTABLISHMENT_ADMIN_ROLE && !cnpj) {
+    if (parsedRole === ESTABLISHMENT_ADMIN_ROLE && !normalizedCnpj) {
       safeUnlink(req.file?.path);
       return res.status(400).json({ erro: 'CNPJ e obrigatorio para administradores de estabelecimento' });
+    }
+
+    let selectedBarbershopPlanId: number | null = null;
+
+    if (parsedRole === ESTABLISHMENT_ADMIN_ROLE) {
+      selectedBarbershopPlanId = Number.parseInt(String(barbershop_plan_id || ''), 10);
+
+      if (!Number.isInteger(selectedBarbershopPlanId) || selectedBarbershopPlanId <= 0) {
+        safeUnlink(req.file?.path);
+        return res.status(400).json({ erro: 'Plano da barbearia e obrigatorio para criar a conta' });
+      }
+
+      const planType = await resolveActiveBarbershopPlanType(selectedBarbershopPlanId);
+
+      if (!planType) {
+        safeUnlink(req.file?.path);
+        return res.status(404).json({ erro: 'Plano da barbearia nao encontrado ou indisponivel' });
+      }
     }
 
     const subtypeTable = getUserSubtypeTable(parsedRole);
@@ -66,6 +169,15 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     if (conflitos.length > 0) {
       safeUnlink(req.file?.path);
       return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    }
+
+    if (parsedRole === ESTABLISHMENT_ADMIN_ROLE) {
+      const conflitosCnpj = await findAdminByCnpj(pool, { cnpj: normalizedCnpj });
+
+      if (conflitosCnpj.length > 0) {
+        safeUnlink(req.file?.path);
+        return res.status(409).json({ erro: 'Ja existe um administrador cadastrado com este CNPJ' });
+      }
     }
 
     const fotoUrl = req.file ? await uploadImageAsset(req.file, 'profile') : DEFAULT_PROFILE_PHOTO;
@@ -83,8 +195,8 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
 
       if (subtypeTable === 'usuarioADM') {
         await connection.execute(
-          'INSERT INTO usuarioADM (usuario_id, role, cnpj) VALUES (?, ?, ?) RETURNING usuario_id',
-          [userId, parsedRole, cnpj],
+          'INSERT INTO usuarioADM (usuario_id, role, cnpj, barbershop_plan_id, plan_selected_em) VALUES (?, ?, ?, ?, NOW()) RETURNING usuario_id',
+          [userId, parsedRole, normalizedCnpj, selectedBarbershopPlanId],
         );
       } else {
         await connection.execute(
@@ -114,6 +226,11 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     if (fotoUrlParaLimpeza) {
       await deleteImageAsset(fotoUrlParaLimpeza, 'profile', DEFAULT_PROFILE_PHOTO);
     }
+
+    if (isPgErrorWithCode(error, '23505') && error.constraint === 'usuarioadm_cnpj_key') {
+      return res.status(409).json({ erro: 'Ja existe um administrador cadastrado com este CNPJ' });
+    }
+
     res.status(500).json({ erro: 'Erro ao criar usuario' });
   }
 });
@@ -460,6 +577,7 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     const id = String(req.params.id);
     const { nome, email, senha, cpf, telefone, cnpj } = req.body;
     const usuarioAtual = await resolveUserById(pool, id);
+    const normalizedCnpj = typeof cnpj === 'string' ? cnpj.trim() : cnpj;
 
     if (!usuarioAtual) {
       safeUnlink(req.file?.path);
@@ -486,6 +604,18 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
       return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
     }
 
+    if (usuarioAtual.user_table === 'usuarioADM') {
+      const conflitosCnpj = await findAdminByCnpj(pool, {
+        cnpj: typeof normalizedCnpj === 'string' ? normalizedCnpj : (usuarioAtual.cnpj ?? null),
+        excludeId: id,
+      });
+
+      if (conflitosCnpj.length > 0) {
+        safeUnlink(req.file?.path);
+        return res.status(409).json({ erro: 'Ja existe um administrador cadastrado com este CNPJ' });
+      }
+    }
+
     const nomeAtualizado = nome ?? usuarioAtual.nome;
     const senhaAtualizada = senha ?? usuarioAtual.senha;
     const telefoneAtualizado = telefone ?? usuarioAtual.telefone;
@@ -501,7 +631,7 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
       if (usuarioAtual.user_table === 'usuarioADM' && (cnpj !== undefined || usuarioAtual.cnpj !== undefined)) {
         await connection.execute(
           'UPDATE usuarioADM SET cnpj = ? WHERE usuario_id = ?',
-          [cnpj ?? usuarioAtual.cnpj ?? null, id],
+          [normalizedCnpj ?? usuarioAtual.cnpj ?? null, id],
         );
       }
 
@@ -531,6 +661,11 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     if (uploadedPhotoUrl) {
       await deleteImageAsset(uploadedPhotoUrl, 'profile', DEFAULT_PROFILE_PHOTO);
     }
+
+    if (isPgErrorWithCode(error, '23505') && error.constraint === 'usuarioadm_cnpj_key') {
+      return res.status(409).json({ erro: 'Ja existe um administrador cadastrado com este CNPJ' });
+    }
+
     res.status(500).json({ erro: 'Erro ao atualizar usuario' });
   }
 });

@@ -26,6 +26,11 @@ export interface UnifiedUser {
   verifycode?: string | null;
   verified?: boolean | null;
   user_table?: UserSubtypeTable | null;
+  barbershop_plan_id?: number | null;
+  barbershop_plan_code?: string | null;
+  barbershop_plan_name?: string | null;
+  barbershop_plan_price?: number | null;
+  barbershop_plan_billing_cycle?: string | null;
 }
 
 const BASE_USER_SELECT = `
@@ -39,6 +44,11 @@ const BASE_USER_SELECT = `
     u.role,
     u.imagem_url,
     ua.cnpj,
+    ua.barbershop_plan_id,
+    bpt.code AS barbershop_plan_code,
+    bpt.name AS barbershop_plan_name,
+    bpt.price AS barbershop_plan_price,
+    bpt.billing_cycle AS barbershop_plan_billing_cycle,
     ub.idbarberworker,
     ub.verifycode,
     ub.verified,
@@ -51,6 +61,7 @@ const BASE_USER_SELECT = `
   FROM usuario u
   LEFT JOIN usuarioCliente uc ON uc.usuario_id = u.id
   LEFT JOIN usuarioADM ua ON ua.usuario_id = u.id
+  LEFT JOIN barbershop_plan_types bpt ON bpt.id = ua.barbershop_plan_id
   LEFT JOIN usuarioBarber ub ON ub.usuario_id = u.id
 `;
 
@@ -116,6 +127,11 @@ export function formatUser(user: Partial<UnifiedUser> & { role?: string | null; 
     fotoUrl: user.imagem_url || null,
     imagem_url: user.imagem_url || null,
     cnpj: user.cnpj ?? null,
+    barbershopPlanId: user.barbershop_plan_id ?? null,
+    barbershopPlanCode: user.barbershop_plan_code ?? null,
+    barbershopPlanName: user.barbershop_plan_name ?? null,
+    barbershopPlanPrice: user.barbershop_plan_price ?? null,
+    barbershopPlanBillingCycle: user.barbershop_plan_billing_cycle ?? null,
     idbarberworker: user.idbarberworker ?? null,
     verifycode: user.verifycode ?? null,
     verified: user.verified ?? false,
@@ -194,6 +210,31 @@ export async function findUsersByEmailOrCpf(
   }
 
   let whereClause = `WHERE (${conditions.join(' OR ')})`;
+
+  if (excludeId !== undefined && excludeId !== null) {
+    whereClause += ' AND u.id <> ?';
+    params.push(excludeId);
+  }
+
+  return queryUsers(pool, whereClause, params);
+}
+
+export async function findAdminByCnpj(
+  pool: DatabaseExecutor,
+  {
+    cnpj,
+    excludeId,
+  }: {
+    cnpj?: string | null;
+    excludeId?: string | number | null;
+  },
+) {
+  if (!cnpj) {
+    return [];
+  }
+
+  let whereClause = 'WHERE ua.cnpj = ?';
+  const params: Array<string | number> = [cnpj];
 
   if (excludeId !== undefined && excludeId !== null) {
     whereClause += ' AND u.id <> ?';
