@@ -18,10 +18,11 @@ import {
 } from '../services/users';
 import { safeUnlink } from '../utils/files';
 import { deleteImageAsset, uploadImageAsset } from '../services/storage';
+import { sendVerificationEmail } from '../services/email';
 
 const router = express.Router();
 
-function generateBarberVerifyCode() {
+function generateVerifyCode() {
   return randomBytes(4).toString('hex').toUpperCase();
 }
 
@@ -186,10 +187,14 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
     await connection.beginTransaction();
 
     try {
+      const verifycode = generateVerifyCode();
       const [, result] = await connection.execute(
-        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, parsedRole, fotoUrl],
+        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [email, senha, nome, cpf, telefone, parsedRole, fotoUrl, verifycode, false],
       );
+      sendVerificationEmail(email, nome, verifycode).catch((err) => {
+      console.error("Erro ao enviar email:", err);
+    });
 
       const userId = result.insertId;
 
@@ -291,8 +296,8 @@ router.get('/establishments/:id/barbers', async (req, res) => {
         u.imagem_url,
         NULL::text AS cnpj,
         ub.idbarberworker,
-        ub.verifycode,
-        ub.verified,
+        u.verifycode,
+        u.verified,
         'usuarioBarber'::text AS user_table
       FROM usuario u
       INNER JOIN usuarioBarber ub ON ub.usuario_id = u.id
@@ -375,7 +380,7 @@ router.post('/establishments/:id/barbers', async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      const verifycode = generateBarberVerifyCode();
+      const verifycode = generateVerifyCode();
 
       const [, result] = await connection.execute(
         'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -493,7 +498,7 @@ router.post('/login/parceiros', async (req, res) => {
 
     const barbeiros = await queryUsers(
       pool,
-      'WHERE u.email = ? AND u.senha = ? AND ub.verifycode = ? AND ub.usuario_id IS NOT NULL LIMIT 1',
+      'WHERE u.email = ? AND u.senha = ? AND u.verifycode = ? AND ub.usuario_id IS NOT NULL LIMIT 1',
       [email, senha, verifycode],
     );
 

@@ -50,8 +50,8 @@ const BASE_USER_SELECT = `
     bpt.price AS barbershop_plan_price,
     bpt.billing_cycle AS barbershop_plan_billing_cycle,
     ub.idbarberworker,
-    ub.verifycode,
-    ub.verified,
+    u.verifycode,
+    u.verified,
     CASE
       WHEN ub.usuario_id IS NOT NULL THEN 'usuarioBarber'
       WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
