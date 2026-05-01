@@ -2,7 +2,6 @@ import nodemailer from 'nodemailer';
 import dns from 'dns';
 
 // Forçar IPv4 — Railway nao suporta IPv6 outbound
-// Sobrescreve dns.lookup para sempre usar family:4
 const originalLookup = dns.lookup;
 dns.lookup = ((
   hostname: string,
@@ -17,8 +16,16 @@ dns.lookup = ((
   } else {
     options = { ...(options || {}), family: 4 };
   }
-  return originalLookup(hostname, options, callback!);
+  console.log(`[DNS] Resolving ${hostname} with family:4`);
+  return originalLookup(hostname, options, (err: any, address: any, family: any) => {
+    console.log(`[DNS] Resolved ${hostname} -> ${address} (family:${family}) err:${err}`);
+    callback!(err, address, family);
+  });
 }) as typeof dns.lookup;
+
+console.log('[EMAIL] dns.lookup patch ATIVO — IPv4 forcado');
+console.log('[EMAIL] EMAIL_HOST:', process.env.EMAIL_HOST || '(nao definido)');
+console.log('[EMAIL] EMAIL_PORT:', process.env.EMAIL_PORT || '(nao definido)');
 
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -36,6 +43,7 @@ export async function sendVerificationEmail(
   nome: string,
   verifycode: string
 ) {
+  console.log(`[EMAIL] Enviando verificacao para ${toEmail}...`);
   await transporter.sendMail({
     from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
     to: toEmail,
@@ -62,6 +70,7 @@ export async function sendVerificationEmail(
       </div>
     `,
   });
+  console.log(`[EMAIL] Verificacao enviada para ${toEmail}`);
 }
 
 export async function sendBarberInviteEmail(
@@ -69,6 +78,7 @@ export async function sendBarberInviteEmail(
   establishmentName: string,
   signupUrl: string
 ) {
+  console.log(`[EMAIL] Enviando convite para ${toEmail}...`);
   await transporter.sendMail({
     from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
     to: toEmail,
@@ -100,4 +110,5 @@ export async function sendBarberInviteEmail(
       </div>
     `,
   });
+  console.log(`[EMAIL] Convite enviado para ${toEmail}`);
 }
