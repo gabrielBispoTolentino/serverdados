@@ -2,12 +2,23 @@ import nodemailer from 'nodemailer';
 import dns from 'dns';
 
 // Forçar IPv4 — Railway nao suporta IPv6 outbound
-const ipv4Lookup = (hostname: string, _options: object, callback: (err: Error | null, address: string, family: number) => void) => {
-  dns.resolve4(hostname, (err, addresses) => {
-    if (err) return callback(err, '', 4);
-    callback(null, addresses[0], 4);
-  });
-};
+// Sobrescreve dns.lookup para sempre usar family:4
+const originalLookup = dns.lookup;
+dns.lookup = ((
+  hostname: string,
+  options: dns.LookupOptions | number | undefined | null,
+  callback?: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+) => {
+  if (typeof options === 'function') {
+    callback = options as unknown as typeof callback;
+    options = { family: 4 };
+  } else if (typeof options === 'number') {
+    options = { family: 4 };
+  } else {
+    options = { ...(options || {}), family: 4 };
+  }
+  return originalLookup(hostname, options, callback!);
+}) as typeof dns.lookup;
 
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -18,8 +29,7 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  dnsLookup: ipv4Lookup,
-} as Parameters<typeof nodemailer.createTransport>[0]);
+});
 
 export async function sendVerificationEmail(
   toEmail: string,
