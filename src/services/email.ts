@@ -1,41 +1,9 @@
-import nodemailer from 'nodemailer';
-import dns from 'dns';
+import { Resend } from 'resend';
 
-let transporter: nodemailer.Transporter;
+const resend = new Resend(process.env.RESEND_API_KEY);
+const FROM_EMAIL = process.env.EMAIL_FROM || 'Ponto Corte <onboarding@resend.dev>';
 
-async function getTransporter(): Promise<nodemailer.Transporter> {
-  if (transporter) return transporter;
-
-  const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
-  const port = Number(process.env.EMAIL_PORT) || 465;
-
-  // Resolver manualmente para IPv4 — Railway nao suporta IPv6
-  let resolvedHost = host;
-  try {
-    const addresses = await dns.promises.resolve4(host);
-    resolvedHost = addresses[0];
-    console.log(`[EMAIL] ${host} resolvido para IPv4: ${resolvedHost}`);
-  } catch (err) {
-    console.warn(`[EMAIL] Falha ao resolver ${host} para IPv4, usando hostname original`, err);
-  }
-
-  transporter = nodemailer.createTransport({
-    host: resolvedHost,
-    port,
-    secure: port === 465,
-    connectionTimeout: 10000,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-    tls: {
-      servername: host,
-    },
-  });
-
-  console.log(`[EMAIL] Transporter criado: ${resolvedHost}:${port} secure:${port === 465}`);
-  return transporter;
-}
+console.log('[EMAIL] Resend configurado');
 
 export async function sendVerificationEmail(
   toEmail: string,
@@ -43,11 +11,10 @@ export async function sendVerificationEmail(
   verifycode: string
 ) {
   console.log(`[EMAIL] Enviando verificacao para ${toEmail}...`);
-  const mailer = await getTransporter();
-  await mailer.sendMail({
-    from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
+  const { error } = await resend.emails.send({
+    from: FROM_EMAIL,
     to: toEmail,
-    subject: "Verifique sua conta - Dinamic Cut",
+    subject: 'Verifique sua conta - Dinamic Cut',
     html: `
       <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
         <h2>Olá, ${nome}!</h2>
@@ -70,6 +37,11 @@ export async function sendVerificationEmail(
       </div>
     `,
   });
+
+  if (error) {
+    console.error('[EMAIL] Erro ao enviar verificacao:', error);
+    throw new Error(error.message);
+  }
   console.log(`[EMAIL] Verificacao enviada para ${toEmail}`);
 }
 
@@ -79,9 +51,8 @@ export async function sendBarberInviteEmail(
   signupUrl: string
 ) {
   console.log(`[EMAIL] Enviando convite para ${toEmail}...`);
-  const mailer = await getTransporter();
-  await mailer.sendMail({
-    from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
+  const { error } = await resend.emails.send({
+    from: FROM_EMAIL,
     to: toEmail,
     subject: `Convite para ${establishmentName} - Dinamic Cut`,
     html: `
@@ -111,5 +82,10 @@ export async function sendBarberInviteEmail(
       </div>
     `,
   });
+
+  if (error) {
+    console.error('[EMAIL] Erro ao enviar convite:', error);
+    throw new Error(error.message);
+  }
   console.log(`[EMAIL] Convite enviado para ${toEmail}`);
 }
