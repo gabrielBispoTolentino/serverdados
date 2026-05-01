@@ -12,6 +12,11 @@ oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
 const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 
+console.log('[EMAIL] Verificando variaveis de ambiente GMAIL:');
+console.log('CLIENT_ID existe?', !!process.env.GMAIL_CLIENT_ID);
+console.log('CLIENT_SECRET existe?', !!process.env.GMAIL_CLIENT_SECRET);
+console.log('REFRESH_TOKEN existe?', !!process.env.GMAIL_REFRESH_TOKEN);
+
 // Transportador usado apenas para compilar o HTML/texto em uma string raw RFC 2822
 const streamTransporter = nodemailer.createTransport({
   streamTransport: true,
