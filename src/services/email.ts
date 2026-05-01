@@ -1,44 +1,41 @@
 import nodemailer from 'nodemailer';
 import dns from 'dns';
 
+let transporter: nodemailer.Transporter;
 
-const originalLookup = dns.lookup;
-dns.lookup = ((
-  hostname: string,
-  options: dns.LookupOptions | number | undefined | null,
-  callback?: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
-) => {
-  if (typeof options === 'function') {
-    callback = options as unknown as typeof callback;
-    options = { family: 4 };
-  } else if (typeof options === 'number') {
-    options = { family: 4 };
-  } else {
-    options = { ...(options || {}), family: 4 };
+async function getTransporter(): Promise<nodemailer.Transporter> {
+  if (transporter) return transporter;
+
+  const host = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.EMAIL_PORT) || 465;
+
+  // Resolver manualmente para IPv4 — Railway nao suporta IPv6
+  let resolvedHost = host;
+  try {
+    const addresses = await dns.promises.resolve4(host);
+    resolvedHost = addresses[0];
+    console.log(`[EMAIL] ${host} resolvido para IPv4: ${resolvedHost}`);
+  } catch (err) {
+    console.warn(`[EMAIL] Falha ao resolver ${host} para IPv4, usando hostname original`, err);
   }
-  console.log(`[DNS] Resolving ${hostname} with family:4`);
-  return originalLookup(hostname, options, (err: any, address: any, family: any) => {
-    console.log(`[DNS] Resolved ${hostname} -> ${address} (family:${family}) err:${err}`);
-    callback!(err, address, family);
+
+  transporter = nodemailer.createTransport({
+    host: resolvedHost,
+    port,
+    secure: port === 465,
+    connectionTimeout: 10000,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      servername: host,
+    },
   });
-}) as typeof dns.lookup;
 
-console.log('[EMAIL] dns.lookup patch ATIVO — IPv4 forcado');
-console.log('[EMAIL] EMAIL_HOST:', process.env.EMAIL_HOST || '(nao definido)');
-console.log('[EMAIL] EMAIL_PORT:', process.env.EMAIL_PORT || '(nao definido)');
-
-const emailPort = Number(process.env.EMAIL_PORT) || 465;
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST,
-  port: emailPort,
-  secure: emailPort === 465,
-  connectionTimeout: 10000,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-console.log(`[EMAIL] Transporter: ${process.env.EMAIL_HOST}:${emailPort} secure:${emailPort === 465}`);
+  console.log(`[EMAIL] Transporter criado: ${resolvedHost}:${port} secure:${port === 465}`);
+  return transporter;
+}
 
 export async function sendVerificationEmail(
   toEmail: string,
@@ -46,7 +43,8 @@ export async function sendVerificationEmail(
   verifycode: string
 ) {
   console.log(`[EMAIL] Enviando verificacao para ${toEmail}...`);
-  await transporter.sendMail({
+  const mailer = await getTransporter();
+  await mailer.sendMail({
     from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
     to: toEmail,
     subject: "Verifique sua conta - Dinamic Cut",
@@ -81,7 +79,8 @@ export async function sendBarberInviteEmail(
   signupUrl: string
 ) {
   console.log(`[EMAIL] Enviando convite para ${toEmail}...`);
-  await transporter.sendMail({
+  const mailer = await getTransporter();
+  await mailer.sendMail({
     from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
     to: toEmail,
     subject: `Convite para ${establishmentName} - Dinamic Cut`,
