@@ -1,21 +1,73 @@
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
+import { google } from 'googleapis';
+import type { Readable } from 'stream';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.EMAIL_FROM || 'Ponto Corte <onboarding@resend.dev>';
+const oAuth2Client = new google.auth.OAuth2(
+  process.env.GMAIL_CLIENT_ID,
+  process.env.GMAIL_CLIENT_SECRET,
+  'https://developers.google.com/oauthplayground'
+);
 
-console.log('[EMAIL] Resend configurado');
+oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+
+const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
+
+// Transportador usado apenas para compilar o HTML/texto em uma string raw RFC 2822
+const streamTransporter = nodemailer.createTransport({
+  streamTransport: true,
+  newline: 'unix',
+});
+
+async function sendRawEmail(to: string, subject: string, html: string) {
+  if (!process.env.EMAIL_USER) {
+    throw new Error('EMAIL_USER nao configurado no .env');
+  }
+
+  // 1. Usa o nodemailer para construir a mensagem MIME
+  const info = await streamTransporter.sendMail({
+    from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
+    to,
+    subject,
+    html,
+  });
+
+  // 2. Lê a stream para pegar o buffer completo da mensagem
+  const stream = info.message as Readable;
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+  const messageBuffer = Buffer.concat(chunks);
+
+  // 3. A API do Gmail requer Base64 URL-safe
+  const rawMessage = messageBuffer
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  // 4. Envia via API HTTP (passa reto pelos bloqueios de SMTP do Railway!)
+  const res = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: rawMessage,
+    },
+  });
+
+  return res.data;
+}
 
 export async function sendVerificationEmail(
   toEmail: string,
   nome: string,
   verifycode: string
 ) {
-  console.log(`[EMAIL] Enviando verificacao para ${toEmail}...`);
-  const { error } = await resend.emails.send({
-    from: FROM_EMAIL,
-    to: toEmail,
-    subject: 'Verifique sua conta - Dinamic Cut',
-    html: `
+  console.log(`[EMAIL] Enviando verificacao para ${toEmail} via Gmail API...`);
+  try {
+    await sendRawEmail(
+      toEmail,
+      "Verifique sua conta - Dinamic Cut",
+      `
       <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
         <h2>Olá, ${nome}!</h2>
         <p>Seu código de verificação é:</p>
@@ -35,14 +87,13 @@ export async function sendVerificationEmail(
           Este código expira em 24 horas.
         </p>
       </div>
-    `,
-  });
-
-  if (error) {
-    console.error('[EMAIL] Erro ao enviar verificacao:', error);
-    throw new Error(error.message);
+      `
+    );
+    console.log(`[EMAIL] Verificacao enviada com sucesso para ${toEmail}`);
+  } catch (error: any) {
+    console.error('[EMAIL] Erro ao enviar verificacao:', error.message || error);
+    throw new Error('Falha ao enviar email de verificacao');
   }
-  console.log(`[EMAIL] Verificacao enviada para ${toEmail}`);
 }
 
 export async function sendBarberInviteEmail(
@@ -50,12 +101,12 @@ export async function sendBarberInviteEmail(
   establishmentName: string,
   signupUrl: string
 ) {
-  console.log(`[EMAIL] Enviando convite para ${toEmail}...`);
-  const { error } = await resend.emails.send({
-    from: FROM_EMAIL,
-    to: toEmail,
-    subject: `Convite para ${establishmentName} - Dinamic Cut`,
-    html: `
+  console.log(`[EMAIL] Enviando convite para ${toEmail} via Gmail API...`);
+  try {
+    await sendRawEmail(
+      toEmail,
+      `Convite para ${establishmentName} - Dinamic Cut`,
+      `
       <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
         <h2>Você foi convidado!</h2>
         <p>A barbearia <strong>${establishmentName}</strong> convidou você para fazer parte da equipe.</p>
@@ -80,12 +131,11 @@ export async function sendBarberInviteEmail(
           <a href="${signupUrl}" style="word-break: break-all;">${signupUrl}</a>
         </p>
       </div>
-    `,
-  });
-
-  if (error) {
-    console.error('[EMAIL] Erro ao enviar convite:', error);
-    throw new Error(error.message);
+      `
+    );
+    console.log(`[EMAIL] Convite enviado com sucesso para ${toEmail}`);
+  } catch (error: any) {
+    console.error('[EMAIL] Erro ao enviar convite:', error.message || error);
+    throw new Error('Falha ao enviar email de convite');
   }
-  console.log(`[EMAIL] Convite enviado para ${toEmail}`);
 }
