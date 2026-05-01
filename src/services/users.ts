@@ -50,8 +50,8 @@ const BASE_USER_SELECT = `
     bpt.price AS barbershop_plan_price,
     bpt.billing_cycle AS barbershop_plan_billing_cycle,
     ub.idbarberworker,
-    u.verifycode,
-    u.verified,
+    u.verifycode AS verifycode,
+    u.verified AS verified,
     CASE
       WHEN ub.usuario_id IS NOT NULL THEN 'usuarioBarber'
       WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
@@ -217,6 +217,20 @@ export async function findUsersByEmailOrCpf(
   }
 
   return queryUsers(pool, whereClause, params);
+}
+
+export async function findUserByEmail(pool: DatabaseExecutor, email: string) {
+  const [rows] = await pool.execute<UnifiedUser>(
+    `
+    ${BASE_USER_SELECT}
+    WHERE u.email = ?
+      AND ${ACTIVE_USER_CONDITION}
+    LIMIT 1
+    `,
+    [email],
+  );
+
+  return rows[0] ?? null;
 }
 
 export async function findAdminByCnpj(

@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadProfile } from '../config/uploads';
+import { findUserByEmail } from '../services/users';
 import {
   BARBER_SUBTYPE_TABLE,
   CLIENT_ROLE,
@@ -383,16 +384,20 @@ router.post('/establishments/:id/barbers', async (req, res) => {
       const verifycode = generateVerifyCode();
 
       const [, result] = await connection.execute(
-        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO],
+        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
       );
 
       const userId = result.insertId;
 
       await connection.execute(
-        'INSERT INTO usuarioBarber (usuario_id, idbarberworker, verifycode, verified) VALUES (?, ?, ?, ?) RETURNING usuario_id',
-        [userId, establishmentId, verifycode, false],
+        'INSERT INTO usuarioBarber (usuario_id, idbarberworker) VALUES (?, ?) RETURNING usuario_id',
+        [userId, establishmentId],
       );
+
+      await sendVerificationEmail(email, nome, verifycode).catch((err) => {
+        console.error('Erro ao enviar email de verificação:', err);
+      });
 
       await connection.commit();
       connection.release();
@@ -510,7 +515,7 @@ router.post('/login/parceiros', async (req, res) => {
 
     if (!barbeiro.verified) {
       await pool.execute(
-        'UPDATE usuarioBarber SET verified = ?, updated_em = NOW() WHERE usuario_id = ?',
+        'UPDATE usuario SET verified = ?, updated_em = NOW() WHERE id = ?',
         [true, barbeiro.id],
       );
     }
@@ -526,6 +531,62 @@ router.post('/login/parceiros', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao realizar login de parceiro' });
+  }
+});
+
+router.post('/verify', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ erro: 'Email e codigo de verificacao sao obrigatorios' });
+    }
+
+    const usuario = await findUserByEmail(pool, String(email));
+
+    if (!usuario) {
+      return res.status(404).json({ erro: 'Usuario nao encontrado' });
+    }
+
+    if (usuario.verified) {
+      return res.json({ mensagem: 'Usuario ja verificado' });
+    }
+
+    if (usuario.verifycode !== String(code).trim()) {
+      return res.status(400).json({ erro: 'Codigo de verificacao invalido' });
+    }
+
+    await pool.execute('UPDATE usuario SET verified = ?, updated_em = NOW() WHERE id = ?', [true, usuario.id]);
+
+    res.json({ mensagem: 'Usuario verificado com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao verificar usuario' });
+  }
+});
+
+router.post('/resend-code', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ erro: 'Email e obrigatorio' });
+    }
+
+    const usuario = await findUserByEmail(pool, String(email));
+
+    if (!usuario) {
+      return res.status(404).json({ erro: 'Usuario nao encontrado' });
+    }
+
+    const verifycode = generateVerifyCode();
+    await pool.execute('UPDATE usuario SET verifycode = ?, updated_em = NOW() WHERE id = ?', [verifycode, usuario.id]);
+    await sendVerificationEmail(email, usuario.nome, verifycode);
+
+    res.json({ mensagem: 'Codigo de verificacao reenviado com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao reenviar codigo de verificacao' });
   }
 });
 
