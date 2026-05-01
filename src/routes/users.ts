@@ -3,12 +3,12 @@ import { randomBytes } from 'crypto';
 import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadProfile } from '../config/uploads';
-import { findUserByEmail } from '../services/users';
 import {
   BARBER_SUBTYPE_TABLE,
   CLIENT_ROLE,
   ESTABLISHMENT_ADMIN_ROLE,
   findAdminByCnpj,
+  findUserByEmail,
   findUsersByEmailOrCpf,
   findUsersByLogin,
   formatUser,
@@ -16,6 +16,7 @@ import {
   parseUserRole,
   queryUsers,
   resolveUserById,
+  UnifiedUser,
 } from '../services/users';
 import { safeUnlink } from '../utils/files';
 import { deleteImageAsset, uploadImageAsset } from '../services/storage';
@@ -284,7 +285,7 @@ router.get('/establishments/:id/barbers', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado para este administrador' });
     }
 
-    const [barbers] = await pool.execute(
+    const [barbers] = await pool.execute<UnifiedUser>(
       `
       SELECT
         u.id,
@@ -328,7 +329,7 @@ router.get('/establishments/:id/barbers/public', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado' });
     }
 
-    const [barbers] = await pool.execute(
+    const [barbers] = await pool.execute<{ id: number; nome: string; imagem_url: string | null }>(
       `
       SELECT
         u.id,
@@ -356,43 +357,6 @@ router.get('/establishments/:id/barbers/public', async (req, res) => {
   }
 });
 
-router.post('/establishments/:id/barbers', async (req, res) => {
-  try {
-    const establishmentId = String(req.params.id);
-    const { admin_user_id, email } = req.body;
-
-    if (!admin_user_id || !email) {
-      return res.status(400).json({ erro: 'admin_user_id e email sao obrigatorios' });
-    }
-
-    const estabelecimento = await resolveOwnedEstablishment(establishmentId, String(admin_user_id));
-
-    if (!estabelecimento) {
-      return res.status(404).json({ erro: 'Estabelecimento nao encontrado para este administrador' });
-    }
-
-    const [estRows] = await pool.execute(
-      'SELECT barbercode, nome FROM establishments WHERE id = ? AND deletedo_em IS NULL',
-      [establishmentId],
-    );
-
-    if (estRows.length === 0 || !estRows[0].barbercode) {
-      return res.status(400).json({ erro: 'Estabelecimento nao possui codigo de barbeiro configurado' });
-    }
-
-    const barbercode = estRows[0].barbercode;
-    const establishmentName = estRows[0].nome;
-    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
-    const signupUrl = `${frontendUrl}/barber-signup?email=${encodeURIComponent(email)}`;
-
-    await sendBarberInviteEmail(email, establishmentName, signupUrl);
-
-    res.json({ mensagem: 'Convite enviado com sucesso' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ erro: 'Erro ao enviar convite para barbeiro' });
-  }
-});
 
 router.delete('/establishments/:id/barbers/:barberId', async (req, res) => {
   try {
@@ -467,46 +431,6 @@ router.delete('/establishments/:id/barbers/:barberId', async (req, res) => {
   }
 });
 
-router.post('/login/parceiros', async (req, res) => {
-  try {
-    const { email, senha, verifycode } = req.body;
-
-    if (!email || !senha || !verifycode) {
-      return res.status(400).json({ erro: 'Email, senha e codigo de verificacao sao obrigatorios' });
-    }
-
-    const barbeiros = await queryUsers(
-      pool,
-      'WHERE u.email = ? AND u.senha = ? AND u.verifycode = ? AND ub.usuario_id IS NOT NULL LIMIT 1',
-      [email, senha, verifycode],
-    );
-
-    if (barbeiros.length === 0) {
-      return res.status(401).json({ erro: 'Credenciais de parceiro invalidas' });
-    }
-
-    const barbeiro = barbeiros[0];
-
-    if (!barbeiro.verified) {
-      await pool.execute(
-        'UPDATE usuario SET verified = ?, updated_em = NOW() WHERE id = ?',
-        [true, barbeiro.id],
-      );
-    }
-
-    res.json({
-      mensagem: 'Login de parceiro realizado com sucesso',
-      usuario: {
-        ...formatUser(barbeiro),
-        verified: true,
-        fotoUrl: barbeiro.imagem_url || DEFAULT_PROFILE_PHOTO,
-      },
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ erro: 'Erro ao realizar login de parceiro' });
-  }
-});
 
 router.post('/verify', async (req, res) => {
   try {
