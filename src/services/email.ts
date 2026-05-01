@@ -1,8 +1,13 @@
 import nodemailer from 'nodemailer';
 import dns from 'dns';
 
-// Force IPv4 DNS resolution — Railway containers don't support IPv6 outbound
-dns.setDefaultResultOrder('ipv4first');
+// Forçar IPv4 — Railway nao suporta IPv6 outbound
+const ipv4Lookup = (hostname: string, _options: object, callback: (err: Error | null, address: string, family: number) => void) => {
+  dns.resolve4(hostname, (err, addresses) => {
+    if (err) return callback(err, '', 4);
+    callback(null, addresses[0], 4);
+  });
+};
 
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -13,7 +18,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-});
+  dnsLookup: ipv4Lookup,
+} as Parameters<typeof nodemailer.createTransport>[0]);
+
 export async function sendVerificationEmail(
   toEmail: string,
   nome: string,
