@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import dns from 'dns';
 
-// Forçar IPv4 — Railway nao suporta IPv6 outbound
+
 const originalLookup = dns.lookup;
 dns.lookup = ((
   hostname: string,
@@ -27,16 +27,18 @@ console.log('[EMAIL] dns.lookup patch ATIVO — IPv4 forcado');
 console.log('[EMAIL] EMAIL_HOST:', process.env.EMAIL_HOST || '(nao definido)');
 console.log('[EMAIL] EMAIL_PORT:', process.env.EMAIL_PORT || '(nao definido)');
 
+const emailPort = Number(process.env.EMAIL_PORT) || 465;
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
-  port: Number(process.env.EMAIL_PORT) || 587,
-  secure: false,
+  port: emailPort,
+  secure: emailPort === 465,
   connectionTimeout: 10000,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
 });
+console.log(`[EMAIL] Transporter: ${process.env.EMAIL_HOST}:${emailPort} secure:${emailPort === 465}`);
 
 export async function sendVerificationEmail(
   toEmail: string,
