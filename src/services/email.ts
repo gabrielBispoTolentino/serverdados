@@ -41,3 +41,41 @@ export async function sendVerificationEmail(
     `,
   });
 }
+
+export async function sendBarberInviteEmail(
+  toEmail: string,
+  establishmentName: string,
+  signupUrl: string
+) {
+  await transporter.sendMail({
+    from: `"Ponto Corte" <${process.env.EMAIL_USER}>`,
+    to: toEmail,
+    subject: `Convite para ${establishmentName} - Dinamic Cut`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
+        <h2>Você foi convidado!</h2>
+        <p>A barbearia <strong>${establishmentName}</strong> convidou você para fazer parte da equipe.</p>
+        <p>Para criar sua conta e acessar seu painel, clique no botão abaixo:</p>
+        <a href="${signupUrl}" style="
+          display: inline-block;
+          padding: 0.8rem 2rem;
+          background: #00e054;
+          color: #fff;
+          text-decoration: none;
+          border-radius: 4px;
+          font-weight: 700;
+          font-size: 1rem;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          margin: 1.5rem 0;
+        ">
+          Criar minha conta
+        </a>
+        <p style="color: #667788; font-size: 0.9rem;">
+          Caso o botão não funcione, acesse diretamente: <br/>
+          <a href="${signupUrl}" style="word-break: break-all;">${signupUrl}</a>
+        </p>
+      </div>
+    `,
+  });
+}

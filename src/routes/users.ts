@@ -19,7 +19,7 @@ import {
 } from '../services/users';
 import { safeUnlink } from '../utils/files';
 import { deleteImageAsset, uploadImageAsset } from '../services/storage';
-import { sendVerificationEmail } from '../services/email';
+import { sendVerificationEmail, sendBarberInviteEmail } from '../services/email';
 
 const router = express.Router();
 
@@ -194,8 +194,8 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
         [email, senha, nome, cpf, telefone, parsedRole, fotoUrl, verifycode, false],
       );
       sendVerificationEmail(email, nome, verifycode).catch((err) => {
-      console.error("Erro ao enviar email:", err);
-    });
+        console.error("Erro ao enviar email:", err);
+      });
 
       const userId = result.insertId;
 
@@ -359,10 +359,10 @@ router.get('/establishments/:id/barbers/public', async (req, res) => {
 router.post('/establishments/:id/barbers', async (req, res) => {
   try {
     const establishmentId = String(req.params.id);
-    const { admin_user_id, nome, email, senha, cpf, telefone } = req.body;
+    const { admin_user_id, email } = req.body;
 
-    if (!admin_user_id || !nome || !email || !senha || !cpf || !telefone) {
-      return res.status(400).json({ erro: 'Todos os campos sao obrigatorios' });
+    if (!admin_user_id || !email) {
+      return res.status(400).json({ erro: 'admin_user_id e email sao obrigatorios' });
     }
 
     const estabelecimento = await resolveOwnedEstablishment(establishmentId, String(admin_user_id));
@@ -371,52 +371,26 @@ router.post('/establishments/:id/barbers', async (req, res) => {
       return res.status(404).json({ erro: 'Estabelecimento nao encontrado para este administrador' });
     }
 
-    const conflitos = await findUsersByEmailOrCpf(pool, { email, cpf });
+    const [estRows] = await pool.execute(
+      'SELECT barbercode, nome FROM establishments WHERE id = ? AND deletedo_em IS NULL',
+      [establishmentId],
+    );
 
-    if (conflitos.length > 0) {
-      return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    if (estRows.length === 0 || !estRows[0].barbercode) {
+      return res.status(400).json({ erro: 'Estabelecimento nao possui codigo de barbeiro configurado' });
     }
 
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+    const barbercode = estRows[0].barbercode;
+    const establishmentName = estRows[0].nome;
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+    const signupUrl = `${frontendUrl}/barber-signup?email=${encodeURIComponent(email)}`;
 
-    try {
-      const verifycode = generateVerifyCode();
+    await sendBarberInviteEmail(email, establishmentName, signupUrl);
 
-      const [, result] = await connection.execute(
-        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
-      );
-
-      const userId = result.insertId;
-
-      await connection.execute(
-        'INSERT INTO usuarioBarber (usuario_id, idbarberworker) VALUES (?, ?) RETURNING usuario_id',
-        [userId, establishmentId],
-      );
-
-      await sendVerificationEmail(email, nome, verifycode).catch((err) => {
-        console.error('Erro ao enviar email de verificação:', err);
-      });
-
-      await connection.commit();
-      connection.release();
-
-      const createdBarber = await resolveUserById(pool, userId);
-
-      res.status(201).json({
-        mensagem: 'Barbeiro criado com sucesso',
-        id: userId,
-        usuario: createdBarber ? formatUser(createdBarber) : null,
-      });
-    } catch (error) {
-      await connection.rollback();
-      connection.release();
-      throw error;
-    }
+    res.json({ mensagem: 'Convite enviado com sucesso' });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ erro: 'Erro ao criar barbeiro' });
+    res.status(500).json({ erro: 'Erro ao enviar convite para barbeiro' });
   }
 });
 
@@ -757,6 +731,146 @@ router.delete('/usuarios/:id', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ erro: 'Erro ao deletar usuario' });
+  }
+});
+
+router.post('/barber-signup/validate', async (req, res) => {
+  try {
+    const { barbercode } = req.body;
+
+    if (!barbercode || typeof barbercode !== 'string') {
+      return res.status(400).json({ erro: 'Codigo da barbearia e obrigatorio' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT id, nome FROM establishments WHERE barbercode = ? AND deletedo_em IS NULL LIMIT 1',
+      [barbercode.trim().toUpperCase()],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ erro: 'Codigo da barbearia invalido' });
+    }
+
+    res.json({
+      valid: true,
+      establishment: {
+        id: rows[0].id,
+        nome: rows[0].nome,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao validar codigo da barbearia' });
+  }
+});
+
+router.post('/barber-signup', async (req, res) => {
+  try {
+    const { barbercode, nome, email, senha, cpf, telefone } = req.body;
+
+    if (!barbercode || !nome || !email || !senha || !cpf || !telefone) {
+      return res.status(400).json({ erro: 'Todos os campos sao obrigatorios' });
+    }
+
+    const [estRows] = await pool.execute(
+      'SELECT id, nome FROM establishments WHERE barbercode = ? AND deletedo_em IS NULL LIMIT 1',
+      [String(barbercode).trim().toUpperCase()],
+    );
+
+    if (estRows.length === 0) {
+      return res.status(404).json({ erro: 'Codigo da barbearia invalido' });
+    }
+
+    const establishmentId = estRows[0].id;
+
+    const conflitos = await findUsersByEmailOrCpf(pool, { email, cpf });
+
+    if (conflitos.length > 0) {
+      return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    }
+
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const verifycode = generateVerifyCode();
+
+      const [, result] = await connection.execute(
+        'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
+      );
+
+      const userId = result.insertId;
+
+      await connection.execute(
+        'INSERT INTO usuarioBarber (usuario_id, idbarberworker) VALUES (?, ?) RETURNING usuario_id',
+        [userId, establishmentId],
+      );
+
+      sendVerificationEmail(email, nome, verifycode).catch((err) => {
+        console.error('Erro ao enviar email de verificacao:', err);
+      });
+
+      await connection.commit();
+      connection.release();
+
+      const createdUser = await resolveUserById(pool, userId);
+
+      res.status(201).json({
+        mensagem: 'Conta de barbeiro criada com sucesso',
+        id: userId,
+        usuario: createdUser ? formatUser(createdUser) : null,
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error(error);
+
+    if (isPgErrorWithCode(error, '23505')) {
+      return res.status(409).json({ erro: 'Ja existe um usuario cadastrado com este email ou CPF' });
+    }
+
+    res.status(500).json({ erro: 'Erro ao criar conta de barbeiro' });
+  }
+});
+
+router.post('/barber-invite', async (req, res) => {
+  try {
+    const { admin_user_id, establishment_id, email } = req.body;
+
+    if (!admin_user_id || !establishment_id || !email) {
+      return res.status(400).json({ erro: 'admin_user_id, establishment_id e email sao obrigatorios' });
+    }
+
+    const estabelecimento = await resolveOwnedEstablishment(String(establishment_id), String(admin_user_id));
+
+    if (!estabelecimento) {
+      return res.status(404).json({ erro: 'Estabelecimento nao encontrado para este administrador' });
+    }
+
+    const [estRows] = await pool.execute(
+      'SELECT barbercode, nome FROM establishments WHERE id = ? AND deletedo_em IS NULL',
+      [establishment_id],
+    );
+
+    if (estRows.length === 0 || !estRows[0].barbercode) {
+      return res.status(400).json({ erro: 'Estabelecimento nao possui codigo de barbeiro configurado' });
+    }
+
+    const barbercode = estRows[0].barbercode;
+    const establishmentName = estRows[0].nome;
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+    const signupUrl = `${frontendUrl}/barber-signup?email=${encodeURIComponent(email)}`;
+
+    await sendBarberInviteEmail(email, establishmentName, signupUrl);
+
+    res.json({ mensagem: 'Convite enviado com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao enviar convite para barbeiro' });
   }
 });
 

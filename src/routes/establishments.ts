@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'crypto';
 import { DEFAULT_ESTABLISHMENT_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadEstablishment } from '../config/uploads';
@@ -119,6 +120,10 @@ async function buildEstablishmentImageResponse(imagePaths: string[]) {
   };
 }
 
+function generateBarbercode() {
+  return randomBytes(4).toString('hex').toUpperCase();
+}
+
 async function formatEstablishmentForResponse(
   establishment: Record<string, unknown>,
   imagePaths: string[],
@@ -139,6 +144,7 @@ async function formatEstablishmentForResponse(
     longitude: establishment.longitude ?? null,
     googleMapsUrl: establishment.google_maps_url ?? null,
     locationVerified: establishment.location_verified ?? null,
+    barbercode: establishment.barbercode ?? null,
     fullAddress: {
       rua: establishment.rua ?? '',
       cidade: establishment.cidade ?? '',
@@ -315,7 +321,8 @@ router.get('/establishments', async (req, res) => {
         latitude,
         longitude,
         google_maps_url,
-        location_verified
+        location_verified,
+        barbercode
       FROM establishments
       WHERE deletedo_em IS NULL
       ORDER BY rating_avg DESC, nome ASC
@@ -361,7 +368,8 @@ router.get('/establishments/:id', async (req, res) => {
         latitude,
         longitude,
         google_maps_url,
-        location_verified
+        location_verified,
+        barbercode
       FROM establishments
       WHERE id = ? AND deletedo_em IS NULL
     `,
@@ -414,11 +422,13 @@ router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
 
     const meiTratado = mei === '' || mei === null || mei === undefined ? 0 : parseInt(mei, 10);
 
+    const barbercode = generateBarbercode();
+
     const [, result] = await pool.execute(
       `
       INSERT INTO establishments
-        (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+        (dono_id, nome, description, rua, cidade, stado, pais, cep, phone, mei, rating_avg, rating_count, imagem_url, barbercode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
     `,
       [
         dono_id,
@@ -432,6 +442,7 @@ router.post('/establishments', uploadEstablishmentImages, async (req, res) => {
         phone || null,
         Number.isNaN(meiTratado) ? 0 : meiTratado,
         imagePath,
+        barbercode,
       ],
     );
 
