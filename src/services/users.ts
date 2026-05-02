@@ -3,12 +3,14 @@ import type { DatabaseExecutor } from '../config/database';
 export const CLIENT_ROLE = 'Cliente';
 export const ESTABLISHMENT_ADMIN_ROLE = 'ADM_Estabelecimento';
 export const PLATFORM_ADMIN_ROLE = 'ADM_Plataforma';
+export const BARBER_ROLE = 'Barbeiro';
 export const BARBER_SUBTYPE_TABLE = 'usuarioBarber';
 
 export type UserRole =
   | typeof CLIENT_ROLE
   | typeof ESTABLISHMENT_ADMIN_ROLE
-  | typeof PLATFORM_ADMIN_ROLE;
+  | typeof PLATFORM_ADMIN_ROLE
+  | typeof BARBER_ROLE;
 
 export type UserSubtypeTable = 'usuarioCliente' | 'usuarioADM' | typeof BARBER_SUBTYPE_TABLE;
 
@@ -53,9 +55,9 @@ const BASE_USER_SELECT = `
     u.verifycode AS verifycode,
     u.verified AS verified,
     CASE
-      WHEN ub.usuario_id IS NOT NULL THEN 'usuarioBarber'
-      WHEN uc.usuario_id IS NOT NULL THEN 'usuarioCliente'
-      WHEN ua.usuario_id IS NOT NULL THEN 'usuarioADM'
+      WHEN u.role = 'Barbeiro' THEN 'usuarioBarber'
+      WHEN u.role = 'Cliente' THEN 'usuarioCliente'
+      WHEN u.role = 'ADM_Estabelecimento' THEN 'usuarioADM'
       ELSE NULL
     END::text AS user_table
   FROM usuario u
@@ -97,7 +99,7 @@ function withActiveUsers(whereClause = '') {
 }
 
 export function parseUserRole(value: unknown): UserRole | null {
-  if (value === CLIENT_ROLE || value === ESTABLISHMENT_ADMIN_ROLE || value === PLATFORM_ADMIN_ROLE) {
+  if (value === CLIENT_ROLE || value === ESTABLISHMENT_ADMIN_ROLE || value === PLATFORM_ADMIN_ROLE || value === BARBER_ROLE) {
     return value;
   }
 
@@ -111,6 +113,10 @@ export function getUserSubtypeTable(role: UserRole): UserSubtypeTable | null {
 
   if (role === ESTABLISHMENT_ADMIN_ROLE) {
     return 'usuarioADM';
+  }
+
+  if (role === BARBER_ROLE) {
+    return 'usuarioBarber';
   }
 
   return null;

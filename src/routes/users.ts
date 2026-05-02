@@ -4,6 +4,7 @@ import { DEFAULT_PROFILE_PHOTO } from '../config/constants';
 import { pool } from '../config/database';
 import { uploadProfile } from '../config/uploads';
 import {
+  BARBER_ROLE,
   BARBER_SUBTYPE_TABLE,
   CLIENT_ROLE,
   ESTABLISHMENT_ADMIN_ROLE,
@@ -721,7 +722,7 @@ router.post('/barber-signup', async (req, res) => {
 
       const [, result] = await connection.execute(
         'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, CLIENT_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
+        [email, senha, nome, cpf, telefone, BARBER_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
       );
 
       const userId = result.insertId;
