@@ -177,12 +177,11 @@ export async function resolveUserById(pool: DatabaseExecutor, id: string | numbe
 export async function findUsersByLogin(
   pool: DatabaseExecutor,
   login: string,
-  senha: string,
 ) {
   return queryUsers(
     pool,
-    'WHERE (u.email = ? OR u.cpf = ?) AND u.senha = ? LIMIT 1',
-    [login, login, senha],
+    'WHERE (u.email = ? OR u.cpf = ?) LIMIT 1',
+    [login, login],
   );
 }
 

@@ -22,6 +22,7 @@ import {
 import { safeUnlink } from '../utils/files';
 import { deleteImageAsset, uploadImageAsset } from '../services/storage';
 import { sendVerificationEmail, sendBarberInviteEmail } from '../services/email';
+import { hashPassword, verifyPassword } from '../services/passwords';
 
 const router = express.Router();
 
@@ -191,9 +192,10 @@ router.post('/usuarios', uploadProfile.single('foto'), async (req, res) => {
 
     try {
       const verifycode = generateVerifyCode();
+      const senhaHash = await hashPassword(String(senha));
       const [, result] = await connection.execute(
         'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, parsedRole, fotoUrl, verifycode, false],
+        [email, senhaHash, nome, cpf, telefone, parsedRole, fotoUrl, verifycode, false],
       );
       sendVerificationEmail(email, nome, verifycode).catch((err) => {
         console.error("Erro ao enviar email:", err);
@@ -497,13 +499,25 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ erro: 'Usuario e senha sao obrigatorios' });
     }
 
-    const usuarios = await findUsersByLogin(pool, usuario, senha);
+    const usuarios = await findUsersByLogin(pool, usuario);
 
     if (usuarios.length === 0) {
       return res.status(401).json({ erro: 'Credenciais invalidas' });
     }
 
     const usuarioLogado = usuarios[0];
+    const senhaVerificada = await verifyPassword(String(senha), usuarioLogado.senha);
+
+    if (!senhaVerificada.valid) {
+      return res.status(401).json({ erro: 'Credenciais invalidas' });
+    }
+
+    if (senhaVerificada.needsRehash) {
+      const senhaHash = await hashPassword(String(senha));
+      await pool.execute('UPDATE usuario SET senha = ?, updated_em = NOW() WHERE id = ?', [senhaHash, usuarioLogado.id]);
+      usuarioLogado.senha = senhaHash;
+    }
+
     res.json({
       mensagem: 'Login realizado com sucesso',
       usuario: {
@@ -582,7 +596,10 @@ router.put('/usuarios/:id', uploadProfile.single('foto'), async (req, res) => {
     }
 
     const nomeAtualizado = nome ?? usuarioAtual.nome;
-    const senhaAtualizada = senha ?? usuarioAtual.senha;
+    const senhaAtualizada =
+      typeof senha === 'string' && senha.length > 0
+        ? await hashPassword(senha)
+        : usuarioAtual.senha;
     const telefoneAtualizado = telefone ?? usuarioAtual.telefone;
     const connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -719,10 +736,11 @@ router.post('/barber-signup', async (req, res) => {
 
     try {
       const verifycode = generateVerifyCode();
+      const senhaHash = await hashPassword(String(senha));
 
       const [, result] = await connection.execute(
         'INSERT INTO usuario (email, senha, nome, cpf, telefone, role, imagem_url, verifycode, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [email, senha, nome, cpf, telefone, BARBER_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
+        [email, senhaHash, nome, cpf, telefone, BARBER_ROLE, DEFAULT_PROFILE_PHOTO, verifycode, false],
       );
 
       const userId = result.insertId;
